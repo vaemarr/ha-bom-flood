@@ -104,6 +104,39 @@ action:
       message: "Logan River at Waterford has reached minor flood level."
 ```
 
+**Alert when flood status escalates (any level increase):**
+```yaml
+trigger:
+  - platform: state
+    entity_id: sensor.logan_river_at_waterford_flood_status
+condition:
+  - condition: template
+    value_template: >
+      {% set order = ['Below Flood Level', 'Minor', 'Moderate', 'Major'] %}
+      {{ order.index(trigger.to_state.state) > order.index(trigger.from_state.state) }}
+action:
+  - service: notify.mobile_app
+    data:
+      message: >
+        Logan River at Waterford escalated to {{ trigger.to_state.state }} flood.
+```
+
+**All clear — flood has receded:**
+```yaml
+trigger:
+  - platform: state
+    entity_id: sensor.logan_river_at_waterford_flood_status
+    to: "Below Flood Level"
+    from:
+      - "Minor"
+      - "Moderate"
+      - "Major"
+action:
+  - service: notify.mobile_app
+    data:
+      message: "Logan River at Waterford is back below flood level."
+```
+
 **Alert when major flood is less than 2 hours away:**
 ```yaml
 trigger:
@@ -115,6 +148,68 @@ action:
   - service: notify.mobile_app
     data:
       message: "Major flooding at Logan River at Waterford in under 2 hours."
+```
+
+**Alert on rapid rise (rate of rise exceeds threshold):**
+```yaml
+trigger:
+  - platform: numeric_state
+    entity_id: sensor.logan_river_at_waterford_rate_of_rise
+    above: 0.5
+    for:
+      minutes: 15
+action:
+  - service: notify.mobile_app
+    data:
+      message: >
+        Logan River at Waterford rising rapidly at
+        {{ states('sensor.logan_river_at_waterford_rate_of_rise') }} m/hr.
+```
+
+**Hourly summary during a flood event:**
+```yaml
+trigger:
+  - platform: time_pattern
+    hours: "/1"
+condition:
+  - condition: not
+    conditions:
+      - condition: state
+        entity_id: sensor.logan_river_at_waterford_flood_status
+        state: "Below Flood Level"
+action:
+  - service: notify.mobile_app
+    data:
+      message: >
+        Flood update — Logan River at Waterford: {{ states('sensor.logan_river_at_waterford_water_level') }} m
+        ({{ states('sensor.logan_river_at_waterford_flood_status') }},
+        {{ states('sensor.logan_river_at_waterford_trend') }}).
+```
+
+**Trigger a pump or valve when water level exceeds a fixed height:**
+```yaml
+trigger:
+  - platform: numeric_state
+    entity_id: sensor.logan_river_at_waterford_water_level
+    above: 8.5
+action:
+  - service: switch.turn_on
+    target:
+      entity_id: switch.flood_pump
+```
+
+**Alert if a gauge stops reporting (potential sensor outage):**
+```yaml
+trigger:
+  - platform: state
+    entity_id: sensor.logan_river_at_waterford_water_level
+    to: "unavailable"
+    for:
+      minutes: 30
+action:
+  - service: notify.mobile_app
+    data:
+      message: "Logan River at Waterford gauge has been unavailable for 30 minutes."
 ```
 
 ## Options
