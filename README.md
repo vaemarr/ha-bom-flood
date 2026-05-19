@@ -186,17 +186,6 @@ action:
         {{ states('sensor.logan_river_at_waterford_trend') }}).
 ```
 
-**Trigger a pump or valve when water level exceeds a fixed height:**
-```yaml
-trigger:
-  - platform: numeric_state
-    entity_id: sensor.logan_river_at_waterford_water_level
-    above: 8.5
-action:
-  - service: switch.turn_on
-    target:
-      entity_id: switch.flood_pump
-```
 
 **Alert if a gauge stops reporting (potential sensor outage):**
 ```yaml
