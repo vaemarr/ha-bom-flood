@@ -1,0 +1,52 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "BOM Flood Monitor",
+        "description": "Select your state.",
+        "data": {
+          "state": "State"
+        }
+      },
+      "region": {
+        "title": "Select Region",
+        "description": "Select the flood monitoring region within your state.",
+        "data": {
+          "region": "Region"
+        }
+      },
+      "stations": {
+        "title": "Select Gauges",
+        "description": "Choose the river gauges you want to monitor. Each gauge becomes a sensor entity.",
+        "data": {
+          "stations": "Gauges"
+        }
+      },
+      "scan_interval": {
+        "title": "Update Interval",
+        "description": "How often to poll BOM for new readings. BOM updates data approximately every 15 minutes.",
+        "data": {
+          "scan_interval": "Update interval (minutes)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to BOM FTP server. Check your internet connection.",
+      "no_stations": "Please select at least one gauge."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "BOM Flood Monitor Options",
+        "data": {
+          "stations": "Gauges",
+          "scan_interval": "Update interval (minutes)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not refresh station list from BOM FTP."
+    }
+  }
+}
