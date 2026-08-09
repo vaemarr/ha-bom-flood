@@ -20,8 +20,8 @@ from .const import (
     ATTR_MINOR_LEVEL,
     ATTR_MODERATE_LEVEL,
     ATTR_QUALITY,
-    ATTR_RATE_OF_RISE,
     ATTR_STATION_ID,
+    ATTR_THRESHOLD_SOURCE,
     ATTR_TIME_TO_MAJOR,
     ATTR_TIME_TO_MINOR,
     ATTR_TIME_TO_MODERATE,
@@ -29,7 +29,6 @@ from .const import (
     BOM_REGIONS,
     CONF_REGION,
     CONF_STATE,
-    CONF_STATION_META,
     CONF_STATIONS,
     DOMAIN,
     FLOOD_STATUS_BELOW,
@@ -38,7 +37,7 @@ from .const import (
     FLOOD_STATUS_MODERATE,
     FLOOD_STATUS_NO_CLASSIFICATION,
 )
-from .coordinator import BomFloodCoordinator, StationMeta
+from .coordinator import BomFloodCoordinator, StationMeta, build_station_meta
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -74,15 +73,15 @@ async def async_setup_entry(
 ) -> None:
     coordinator: BomFloodCoordinator = hass.data[DOMAIN][entry.entry_id]
     station_ids: list[str] = entry.data[CONF_STATIONS]
-    station_meta: dict[str, dict] = entry.data.get(CONF_STATION_META, {})
+    station_meta = build_station_meta(entry)
 
     entities: list[SensorEntity] = []
     for station_id in station_ids:
-        meta_dict = station_meta.get(station_id, {})
-        entities.append(BomFloodLevelSensor(coordinator, entry, station_id, meta_dict))
-        entities.append(BomFloodStatusSensor(coordinator, entry, station_id, meta_dict))
-        entities.append(BomFloodRateOfRiseSensor(coordinator, entry, station_id, meta_dict))
-        entities.append(BomFloodRainfallSensor(coordinator, entry, station_id, meta_dict))
+        meta = station_meta.get(station_id)
+        entities.append(BomFloodLevelSensor(coordinator, entry, station_id, meta))
+        entities.append(BomFloodStatusSensor(coordinator, entry, station_id, meta))
+        entities.append(BomFloodRateOfRiseSensor(coordinator, entry, station_id, meta))
+        entities.append(BomFloodRainfallSensor(coordinator, entry, station_id, meta))
 
     async_add_entities(entities)
 
@@ -97,13 +96,13 @@ class _BomFloodBaseSensor(CoordinatorEntity[BomFloodCoordinator], SensorEntity):
         coordinator: BomFloodCoordinator,
         entry: ConfigEntry,
         station_id: str,
-        meta_dict: dict[str, Any],
+        meta: StationMeta | None,
     ) -> None:
         super().__init__(coordinator)
         self._station_id = station_id
-        self._meta = StationMeta.from_dict(meta_dict) if meta_dict else None
+        self._meta = meta
         self._entry = entry
-        self._station_name = meta_dict.get("name", station_id)
+        self._station_name = meta.name if meta else station_id
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -127,8 +126,8 @@ class BomFloodLevelSensor(_BomFloodBaseSensor):
     _attr_native_unit_of_measurement = "m"
     _attr_icon = "mdi:waves"
 
-    def __init__(self, coordinator, entry, station_id, meta_dict):
-        super().__init__(coordinator, entry, station_id, meta_dict)
+    def __init__(self, coordinator, entry, station_id, meta):
+        super().__init__(coordinator, entry, station_id, meta)
         self._attr_unique_id = f"{entry.entry_id}_{station_id}_level"
         self._attr_name = "Water Level"
 
@@ -182,8 +181,8 @@ class BomFloodStatusSensor(_BomFloodBaseSensor):
     ]
     _attr_icon = "mdi:water-alert"
 
-    def __init__(self, coordinator, entry, station_id, meta_dict):
-        super().__init__(coordinator, entry, station_id, meta_dict)
+    def __init__(self, coordinator, entry, station_id, meta):
+        super().__init__(coordinator, entry, station_id, meta)
         self._attr_unique_id = f"{entry.entry_id}_{station_id}_flood_status"
         self._attr_name = "Flood Status"
 
@@ -203,6 +202,7 @@ class BomFloodStatusSensor(_BomFloodBaseSensor):
             ATTR_MINOR_LEVEL: self._meta.minor_m if self._meta else None,
             ATTR_MODERATE_LEVEL: self._meta.moderate_m if self._meta else None,
             ATTR_MAJOR_LEVEL: self._meta.major_m if self._meta else None,
+            ATTR_THRESHOLD_SOURCE: self._meta.thresholds_source if self._meta else None,
         }
 
 
@@ -214,8 +214,8 @@ class BomFloodRateOfRiseSensor(_BomFloodBaseSensor):
     _attr_icon = "mdi:arrow-up-down"
     _attr_suggested_display_precision = 3
 
-    def __init__(self, coordinator, entry, station_id, meta_dict):
-        super().__init__(coordinator, entry, station_id, meta_dict)
+    def __init__(self, coordinator, entry, station_id, meta):
+        super().__init__(coordinator, entry, station_id, meta)
         self._attr_unique_id = f"{entry.entry_id}_{station_id}_rate_of_rise"
         self._attr_name = "Rate of Rise"
 
@@ -238,8 +238,8 @@ class BomFloodRainfallSensor(_BomFloodBaseSensor):
     _attr_native_unit_of_measurement = UnitOfPrecipitationDepth.MILLIMETERS
     _attr_icon = "mdi:weather-rainy"
 
-    def __init__(self, coordinator, entry, station_id, meta_dict):
-        super().__init__(coordinator, entry, station_id, meta_dict)
+    def __init__(self, coordinator, entry, station_id, meta):
+        super().__init__(coordinator, entry, station_id, meta)
         self._attr_unique_id = f"{entry.entry_id}_{station_id}_rainfall_1h"
         self._attr_name = "Hourly Rainfall"
 

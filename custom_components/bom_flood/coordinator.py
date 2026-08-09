@@ -6,8 +6,8 @@ import ftplib
 import io
 import logging
 import re
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
+    CONF_CUSTOM_THRESHOLDS,
     CONF_SCAN_INTERVAL,
     CONF_STATION_META,
     CONF_STATIONS,
@@ -29,6 +30,9 @@ from .const import (
     FLOOD_STATUS_NO_CLASSIFICATION,
     HCS_RAINFALL_HOURLY_PREFIX,
     HCS_WATER_LEVEL_PREFIX,
+    THRESHOLD_KEYS,
+    THRESHOLDS_SOURCE_BOM,
+    THRESHOLDS_SOURCE_USER,
     TREND_FALLING,
     TREND_RISING,
     TREND_STEADY,
@@ -63,6 +67,7 @@ class StationMeta:
     minor_m: float | None
     moderate_m: float | None
     major_m: float | None
+    thresholds_source: str = THRESHOLDS_SOURCE_BOM
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -86,6 +91,39 @@ class StationMeta:
             moderate_m=d.get("moderate_m"),
             major_m=d.get("major_m"),
         )
+
+
+def get_custom_thresholds(entry: ConfigEntry) -> dict[str, dict[str, float]]:
+    """User-supplied thresholds, preferring options over data."""
+    return entry.options.get(
+        CONF_CUSTOM_THRESHOLDS, entry.data.get(CONF_CUSTOM_THRESHOLDS, {})
+    )
+
+
+def build_station_meta(entry: ConfigEntry) -> dict[str, StationMeta]:
+    """Station metadata with any user-supplied thresholds applied.
+
+    BOM leaves the flood thresholds empty for gauges it does not classify (ALERT
+    stations, mostly), which makes a status impossible to derive. A user who knows
+    local levels can supply their own; those win over BOM per-level, so a partial
+    override still keeps whatever BOM does publish.
+    """
+    overrides = get_custom_thresholds(entry)
+    metas: dict[str, StationMeta] = {}
+    for station_id, stored in entry.data.get(CONF_STATION_META, {}).items():
+        meta = StationMeta.from_dict(stored)
+        override = overrides.get(station_id) or {}
+        applied = {
+            key: override[key]
+            for key in THRESHOLD_KEYS
+            if override.get(key) is not None
+        }
+        if applied:
+            meta = replace(meta, thresholds_source=THRESHOLDS_SOURCE_USER, **applied)
+        else:
+            meta = replace(meta, thresholds_source=THRESHOLDS_SOURCE_BOM)
+        metas[station_id] = meta
+    return metas
 
 
 @dataclass
@@ -231,10 +269,7 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self._station_ids: list[str] = entry.data[CONF_STATIONS]
-        self._station_meta: dict[str, StationMeta] = {
-            sid: StationMeta.from_dict(d)
-            for sid, d in entry.data.get(CONF_STATION_META, {}).items()
-        }
+        self._station_meta: dict[str, StationMeta] = build_station_meta(entry)
         scan_interval = entry.options.get(
             CONF_SCAN_INTERVAL,
             entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),

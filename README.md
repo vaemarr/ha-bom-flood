@@ -206,6 +206,24 @@ action:
 After setup, click **Configure** on the integration to change:
 - Which gauges are monitored
 - The update interval
+- Flood levels for gauges BOM does not classify (see below)
+
+### Unclassified gauges
+
+BOM publishes minor/moderate/major flood levels for most gauges, but not all. ALERT-type
+stations — often council-operated creek gauges — report water level normally while BOM
+sets no thresholds for them, so no flood status can be derived. BOM's own maps label
+these **No Classification**, and so does this integration.
+
+If you know the levels that matter at such a gauge, the **Configure** dialog offers a
+final step listing every selected gauge BOM leaves unclassified, where you can enter your
+own minor, moderate and major heights in metres. The values must increase from minor to
+major; leaving them blank keeps the gauge unclassified. The Flood Status sensor exposes a
+`threshold_source` attribute of `bom` or `user` so you can tell the two apart.
+
+> These are your own figures, not official BOM classifications. A status derived from them
+> is only as reliable as the levels you enter. Always follow official BOM warnings and
+> emergency services advice.
 
 ## License
 

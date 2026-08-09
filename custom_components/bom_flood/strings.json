@@ -42,11 +42,17 @@
         "data": {
           "stations": "Gauges",
           "scan_interval": "Update interval (minutes)"
-        }
+        },
+        "description": "Change which gauges are monitored and how often BOM is polled."
+      },
+      "thresholds": {
+        "title": "Flood Levels for Unclassified Gauges",
+        "description": "BOM publishes no flood classification levels for: {gauges}.\n\nThese gauges report \"No Classification\" until you supply levels here. Enter the gauge heights in metres at which you consider minor, moderate and major flooding to begin, or leave blank to keep them unclassified. Values must increase from minor to major.\n\nNote: these are your own figures, not official BOM classifications, and any status derived from them is only as good as the levels you enter. Always follow official BOM warnings and emergency services advice."
       }
     },
     "error": {
-      "cannot_connect": "Could not refresh station list from BOM FTP."
+      "cannot_connect": "Could not refresh station list from BOM FTP.",
+      "thresholds_order": "Flood levels must increase: minor lower than moderate, moderate lower than major."
     }
   }
 }

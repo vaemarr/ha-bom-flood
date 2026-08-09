@@ -60,6 +60,14 @@ CONF_REGION = "region"
 CONF_STATIONS = "stations"
 CONF_STATION_META = "station_meta"
 CONF_SCAN_INTERVAL = "scan_interval"
+# User-supplied flood thresholds, keyed by station id, for gauges BOM does not
+# classify: {"540790": {"minor_m": 1.5, "moderate_m": 2.0, "major_m": 2.5}}
+CONF_CUSTOM_THRESHOLDS = "custom_thresholds"
+
+THRESHOLD_KEYS = ("minor_m", "moderate_m", "major_m")
+
+THRESHOLDS_SOURCE_BOM = "bom"
+THRESHOLDS_SOURCE_USER = "user"
 
 ATTR_FLOOD_STATUS = "flood_status"
 ATTR_TREND = "trend"
@@ -73,6 +81,7 @@ ATTR_LONGITUDE = "longitude"
 ATTR_QUALITY = "quality"
 ATTR_RATE_OF_RISE = "rate_of_rise_m_per_hr"
 ATTR_RAINFALL_1H = "rainfall_mm_1h"
+ATTR_THRESHOLD_SOURCE = "threshold_source"
 ATTR_TIME_TO_MINOR = "time_to_minor_flood_hr"
 ATTR_TIME_TO_MODERATE = "time_to_moderate_flood_hr"
 ATTR_TIME_TO_MAJOR = "time_to_major_flood_hr"

@@ -20,6 +20,7 @@ from homeassistant.helpers.selector import (
 from .const import (
     BOM_REGIONS,
     BOM_STATES,
+    CONF_CUSTOM_THRESHOLDS,
     CONF_REGION,
     CONF_SCAN_INTERVAL,
     CONF_STATE,
@@ -27,6 +28,7 @@ from .const import (
     CONF_STATIONS,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    THRESHOLD_KEYS,
 )
 from .coordinator import (
     StationMeta,
@@ -168,6 +170,7 @@ class BomFloodOptionsFlow(OptionsFlow):
     def __init__(self, config_entry: ConfigEntry) -> None:
         self._entry = config_entry
         self._stations_meta: list[StationMeta] = []
+        self._pending: dict[str, Any] = {}
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -191,14 +194,12 @@ class BomFloodOptionsFlow(OptionsFlow):
                 sid: meta_by_id[sid].to_dict() if sid in meta_by_id else existing_meta.get(sid, {})
                 for sid in selected_ids
             }
-            new_data = {
-                **self._entry.data,
+            self._pending = {
                 CONF_STATIONS: selected_ids,
                 CONF_STATION_META: station_meta,
                 CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL]),
             }
-            self.hass.config_entries.async_update_entry(self._entry, data=new_data)
-            return self.async_create_entry(title="", data={})
+            return await self.async_step_thresholds()
 
         current_stations = self._entry.data.get(CONF_STATIONS, [])
         current_interval = self._entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
@@ -222,3 +223,89 @@ class BomFloodOptionsFlow(OptionsFlow):
         return self.async_show_form(
             step_id="init", data_schema=schema, errors=errors
         )
+
+    def _unclassified(self) -> list[dict[str, Any]]:
+        """Selected gauges BOM publishes no minor flood level for."""
+        return [
+            meta
+            for sid in self._pending[CONF_STATIONS]
+            if (meta := self._pending[CONF_STATION_META].get(sid))
+            and meta.get("minor_m") is None
+        ]
+
+    @staticmethod
+    def _threshold_fields(
+        unclassified: list[dict[str, Any]],
+    ) -> list[tuple[str, str, str]]:
+        """(form field, station id, threshold key) for each level to collect.
+
+        The field name doubles as the label HA renders, since these are generated
+        per gauge and so cannot be given translations in strings.json.
+        """
+        fields = []
+        for meta in unclassified:
+            for key, label in zip(THRESHOLD_KEYS, ("Minor", "Moderate", "Major")):
+                fields.append(
+                    (f"{meta['name']} — {label} (m)", meta["station_id"], key)
+                )
+        return fields
+
+    async def async_step_thresholds(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Let the user supply flood levels for gauges BOM does not classify.
+
+        BOM leaves these empty for ALERT-type gauges, which makes a flood status
+        impossible to derive from the feed alone. Skipped entirely when every
+        selected gauge already has BOM thresholds.
+        """
+        unclassified = self._unclassified()
+        if not unclassified:
+            return self._save({})
+
+        errors: dict[str, str] = {}
+        existing = self._entry.options.get(
+            CONF_CUSTOM_THRESHOLDS, self._entry.data.get(CONF_CUSTOM_THRESHOLDS, {})
+        )
+
+        field_map = self._threshold_fields(unclassified)
+
+        if user_input is not None:
+            thresholds: dict[str, dict[str, float]] = {}
+            for field, sid, key in field_map:
+                value = user_input.get(field)
+                if value is not None:
+                    thresholds.setdefault(sid, {})[key] = float(value)
+            for sid, levels in thresholds.items():
+                ordered = [levels[k] for k in THRESHOLD_KEYS if k in levels]
+                if ordered != sorted(ordered) or len(set(ordered)) != len(ordered):
+                    errors["base"] = "thresholds_order"
+                    break
+            if not errors:
+                return self._save(thresholds)
+
+        fields: dict[Any, Any] = {}
+        for field, sid, key in field_map:
+            current = existing.get(sid, {}).get(key)
+            fields[
+                vol.Optional(field, description={"suggested_value": current})
+            ] = NumberSelector(
+                NumberSelectorConfig(min=0, max=50, step=0.01, mode=NumberSelectorMode.BOX)
+            )
+
+        names = ", ".join(m["name"] for m in unclassified)
+        return self.async_show_form(
+            step_id="thresholds",
+            data_schema=vol.Schema(fields),
+            errors=errors,
+            description_placeholders={"gauges": names},
+        )
+
+    def _save(self, thresholds: dict[str, dict[str, float]]) -> FlowResult:
+        new_data = {
+            **self._entry.data,
+            **self._pending,
+            CONF_CUSTOM_THRESHOLDS: thresholds,
+        }
+        self.hass.config_entries.async_update_entry(self._entry, data=new_data)
+        return self.async_create_entry(title="", data={})
