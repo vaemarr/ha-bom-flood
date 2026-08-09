@@ -14,6 +14,9 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = BomFloodCoordinator(hass, entry)
+    # Restore the previous observations before the first poll, so a rate of rise
+    # can be computed immediately rather than after two more BOM publishes.
+    await coordinator.async_load_history()
 
     try:
         await coordinator.async_config_entry_first_refresh()

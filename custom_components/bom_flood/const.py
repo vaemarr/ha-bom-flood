@@ -81,6 +81,7 @@ ATTR_LONGITUDE = "longitude"
 ATTR_QUALITY = "quality"
 ATTR_RATE_OF_RISE = "rate_of_rise_m_per_hr"
 ATTR_RAINFALL_1H = "rainfall_mm_1h"
+ATTR_RATE_CALCULATED_AT = "rate_calculated_at"
 ATTR_THRESHOLD_SOURCE = "threshold_source"
 ATTR_TIME_TO_MINOR = "time_to_minor_flood_hr"
 ATTR_TIME_TO_MODERATE = "time_to_moderate_flood_hr"
@@ -94,6 +95,14 @@ FLOOD_STATUS_MINOR = "Minor"
 FLOOD_STATUS_MODERATE = "Moderate"
 FLOOD_STATUS_MAJOR = "Major"
 FLOOD_STATUS_NO_CLASSIFICATION = "No Classification"
+
+# Previous observations are persisted so a restart does not throw away the
+# baseline the rate of rise is measured from. Beyond MAX_RATE_AGE_HOURS a cached
+# rate is dropped rather than shown: gauges report at very different cadences,
+# and a rate from hours ago is not evidence of what the water is doing now.
+STORAGE_VERSION = 1
+STORAGE_SAVE_DELAY = 30
+MAX_RATE_AGE_HOURS = 6
 
 TREND_RISING = "rising"
 TREND_FALLING = "falling"

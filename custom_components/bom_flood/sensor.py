@@ -20,6 +20,7 @@ from .const import (
     ATTR_MINOR_LEVEL,
     ATTR_MODERATE_LEVEL,
     ATTR_QUALITY,
+    ATTR_RATE_CALCULATED_AT,
     ATTR_STATION_ID,
     ATTR_THRESHOLD_SOURCE,
     ATTR_TIME_TO_MAJOR,
@@ -233,7 +234,14 @@ class BomFloodRateOfRiseSensor(_BomFloodBaseSensor):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         r = self._reading()
-        return {ATTR_TREND: r.trend} if r else {}
+        if not r:
+            return {}
+        return {
+            ATTR_TREND: r.trend,
+            # Which BOM observation produced this rate, so a value carried over
+            # between publishes is not mistaken for a fresh calculation.
+            ATTR_RATE_CALCULATED_AT: r.rate_calculated_at,
+        }
 
 
 class BomFloodRainfallSensor(_BomFloodBaseSensor):

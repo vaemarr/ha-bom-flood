@@ -12,7 +12,9 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_CUSTOM_THRESHOLDS,
@@ -21,6 +23,9 @@ from .const import (
     CONF_STATIONS,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    MAX_RATE_AGE_HOURS,
+    STORAGE_SAVE_DELAY,
+    STORAGE_VERSION,
     FTP_HOST,
     FTP_PATH,
     FLOOD_STATUS_BELOW,
@@ -136,6 +141,7 @@ class StationReading:
     flood_status: str | None
     rate_of_rise_m_per_hr: float | None
     rainfall_mm_1h: float | None
+    rate_calculated_at: str | None = None
 
 
 def _ftp_connect() -> ftplib.FTP:
@@ -277,13 +283,72 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
         self._prev_levels: dict[str, float] = {}
         self._prev_timestamps: dict[str, datetime] = {}
         self._last_rates: dict[str, float] = {}
+        self._rate_calculated_at: dict[str, datetime] = {}
         self._logged_missing: set[str] = set()
+        self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}")
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
             update_interval=timedelta(minutes=scan_interval),
         )
+
+    def _rate_is_fresh(self, calculated_at: datetime) -> bool:
+        return dt_util.utcnow() - calculated_at <= timedelta(hours=MAX_RATE_AGE_HOURS)
+
+    async def async_load_history(self) -> None:
+        """Restore the previous observation per gauge from disk.
+
+        Rate of rise needs two observations at different BOM timestamps. Holding
+        them only in memory meant every restart discarded the baseline and left
+        the sensor unknown until BOM published twice more — hours, on gauges that
+        report infrequently. Restoring the baseline lets the first poll after a
+        restart compute a real rate instead.
+        """
+        stored = await self._store.async_load()
+        if not stored:
+            return
+        for station_id, record in (stored.get("stations") or {}).items():
+            level = record.get("level")
+            timestamp = _parse_iso_timestamp(record.get("timestamp") or "")
+            if level is not None and timestamp is not None:
+                self._prev_levels[station_id] = level
+                self._prev_timestamps[station_id] = timestamp
+            rate = record.get("rate")
+            calculated_at = _parse_iso_timestamp(record.get("rate_calculated_at") or "")
+            if rate is not None and calculated_at is not None and self._rate_is_fresh(calculated_at):
+                self._last_rates[station_id] = rate
+                self._rate_calculated_at[station_id] = calculated_at
+        _LOGGER.debug(
+            "Restored history for %d gauge(s), %d with a usable rate",
+            len(self._prev_levels),
+            len(self._last_rates),
+        )
+
+    def _save_history(self) -> None:
+        def snapshot() -> dict[str, Any]:
+            stations: dict[str, Any] = {}
+            for station_id, level in self._prev_levels.items():
+                timestamp = self._prev_timestamps.get(station_id)
+                calculated_at = self._rate_calculated_at.get(station_id)
+                stations[station_id] = {
+                    "level": level,
+                    "timestamp": timestamp.isoformat() if timestamp else None,
+                    "rate": self._last_rates.get(station_id),
+                    "rate_calculated_at": calculated_at.isoformat() if calculated_at else None,
+                }
+            return {"stations": stations}
+
+        self._store.async_delay_save(snapshot, STORAGE_SAVE_DELAY)
+
+    def _cached_rate(self, station_id: str) -> float | None:
+        """Last computed rate, unless it has aged out."""
+        calculated_at = self._rate_calculated_at.get(station_id)
+        if calculated_at is None or not self._rate_is_fresh(calculated_at):
+            self._last_rates.pop(station_id, None)
+            self._rate_calculated_at.pop(station_id, None)
+            return None
+        return self._last_rates.get(station_id)
 
     async def _async_update_data(self) -> dict[str, StationReading]:
         # Fetch water level and hourly rainfall HCS files in parallel
@@ -350,11 +415,17 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                 if dt_hours > 0:
                     rate_of_rise = round((level - prev_level) / dt_hours, 3)
                     self._last_rates[station_id] = rate_of_rise
+                    self._rate_calculated_at[station_id] = curr_ts
                 else:
-                    rate_of_rise = self._last_rates.get(station_id)
+                    # Same observation as last poll: BOM has not published a new
+                    # reading yet, so keep the rate that observation produced.
+                    rate_of_rise = self._cached_rate(station_id)
+            elif level is not None:
+                rate_of_rise = self._cached_rate(station_id)
 
             if level is None:
                 self._last_rates.pop(station_id, None)
+                self._rate_calculated_at.pop(station_id, None)
             else:
                 self._prev_levels[station_id] = level
             if curr_ts is not None:
@@ -375,6 +446,11 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                 flood_status=flood_status,
                 rate_of_rise_m_per_hr=rate_of_rise,
                 rainfall_mm_1h=rainfall,
+                rate_calculated_at=(
+                    calculated_at.isoformat()
+                    if (calculated_at := self._rate_calculated_at.get(station_id))
+                    else None
+                ),
             )
 
         if missing and not readings:
@@ -394,5 +470,6 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                 len(readings),
             )
         self._logged_missing = set(missing)
+        self._save_history()
 
         return readings

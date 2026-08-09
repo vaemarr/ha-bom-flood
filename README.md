@@ -71,8 +71,22 @@ Each gauge gets four entities:
 |---|---|---|
 | `Water Level` | m | Primary sensor; includes all attributes |
 | `Flood Status` | — | Enum: Below Flood Level / Minor / Moderate / Major / No Classification |
-| `Rate of Rise` | m/h | Positive = rising; retains last value when BOM hasn't updated |
+| `Rate of Rise` | m/h | Positive = rising; survives restarts, expires after 6 h (see below) |
 | `Hourly Rainfall` | mm | `unknown` if BOM doesn't report rainfall for this gauge (about 57% of gauges) |
+
+### Rate of rise across restarts
+
+Rate of rise needs two gauge readings at different BOM timestamps. Those observations are
+persisted to `.storage`, so a restart no longer discards the baseline: the sensor reports
+its last rate immediately on startup, and the first new BOM reading produces a real
+calculation rather than waiting for a second one. On gauges that report every few hours,
+that is the difference between a value straight away and a blank sensor half the day.
+
+A carried-over rate expires after **6 hours**, at which point the sensor returns to
+`unknown`. A rate from six hours ago is not evidence of what the water is doing now, and on
+a flood sensor a confidently wrong number is worse than no number. The `rate_calculated_at`
+attribute gives the BOM observation time the current rate came from, so you can always tell
+a fresh calculation from a carried-over one.
 
 ### Missing values
 
