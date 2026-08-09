@@ -72,7 +72,18 @@ Each gauge gets four entities:
 | `Water Level` | m | Primary sensor; includes all attributes |
 | `Flood Status` | — | Enum: Below Flood Level / Minor / Moderate / Major / No Classification |
 | `Rate of Rise` | m/h | Positive = rising; retains last value when BOM hasn't updated |
-| `Hourly Rainfall` | mm | Unavailable if BOM doesn't report rainfall for this gauge |
+| `Hourly Rainfall` | mm | `unknown` if BOM doesn't report rainfall for this gauge (about 57% of gauges) |
+
+### Missing values
+
+Entities go **`unavailable`** only when BOM stops reporting the gauge altogether. When the
+gauge is in the feed but a particular value is absent, that entity reports **`unknown`**
+and the others keep working.
+
+No missing reading is ever reported as `0`. Zero is a real measurement — 89 gauges were
+reading exactly 0.0 m and 241 were reading below zero in the feed at the time of writing —
+so treating it as "no data" would hide a genuine level, and treating "no data" as zero
+would invent one.
 
 ### Water Level Attributes
 

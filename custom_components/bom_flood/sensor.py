@@ -110,6 +110,12 @@ class _BomFloodBaseSensor(CoordinatorEntity[BomFloodCoordinator], SensorEntity):
 
     @property
     def available(self) -> bool:
+        """Unavailable only when BOM is not reporting this gauge at all.
+
+        A gauge that is in the file but missing an individual value stays
+        available and reports 'unknown' for that value, so a working gauge with a
+        gap in one quantity is not mistaken for one that has dropped off the feed.
+        """
         return (
             self.coordinator.last_update_success
             and self._station_id in (self.coordinator.data or {})
@@ -244,13 +250,13 @@ class BomFloodRainfallSensor(_BomFloodBaseSensor):
         self._attr_name = "Hourly Rainfall"
 
     @property
-    def available(self) -> bool:
-        if not super().available:
-            return False
-        r = self._reading()
-        return r is not None and r.rainfall_mm_1h is not None
-
-    @property
     def native_value(self) -> float | None:
+        """None (state 'unknown') when BOM reports no rainfall for this gauge.
+
+        57% of gauges in the water level file have no rainfall entry at all. The
+        gauge is reachable and reporting, there is just no value for this quantity,
+        which is 'unknown' rather than 'unavailable'. It must not be reported as 0
+        either: 0 mm is a real reading, sent by most gauges on a dry day.
+        """
         r = self._reading()
         return r.rainfall_mm_1h if r else None
