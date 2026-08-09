@@ -21,6 +21,9 @@ from .const import (
     ATTR_MODERATE_LEVEL,
     ATTR_QUALITY,
     ATTR_RATE_CALCULATED_AT,
+    ATTR_READING_AGE_MIN,
+    ATTR_STALE,
+    ATTR_STALE_AFTER_MIN,
     ATTR_STATION_ID,
     ATTR_THRESHOLD_SOURCE,
     ATTR_TIME_TO_MAJOR,
@@ -152,6 +155,12 @@ class BomFloodLevelSensor(_BomFloodBaseSensor):
             attrs[ATTR_TREND] = r.trend
             attrs[ATTR_LAST_OBSERVED] = r.timestamp
             attrs[ATTR_QUALITY] = r.quality
+            # How old the displayed reading is. A gauge that stops reporting
+            # keeps showing its last value, which is the failure most likely to
+            # mislead during a flood, so make the age explicit.
+            attrs[ATTR_READING_AGE_MIN] = r.reading_age_min
+            attrs[ATTR_STALE_AFTER_MIN] = r.stale_after_min
+            attrs[ATTR_STALE] = r.stale
         if self._meta:
             attrs[ATTR_MINOR_LEVEL] = self._meta.minor_m
             attrs[ATTR_MODERATE_LEVEL] = self._meta.moderate_m
@@ -206,6 +215,8 @@ class BomFloodStatusSensor(_BomFloodBaseSensor):
         return {
             ATTR_TREND: r.trend,
             ATTR_LAST_OBSERVED: r.timestamp,
+            ATTR_READING_AGE_MIN: r.reading_age_min,
+            ATTR_STALE: r.stale,
             ATTR_MINOR_LEVEL: self._meta.minor_m if self._meta else None,
             ATTR_MODERATE_LEVEL: self._meta.moderate_m if self._meta else None,
             ATTR_MAJOR_LEVEL: self._meta.major_m if self._meta else None,

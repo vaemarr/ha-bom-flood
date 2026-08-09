@@ -27,6 +27,9 @@ from .const import (
     RATE_HISTORY_HOURS,
     RATE_WINDOW_MAX_HOURS,
     RATE_WINDOW_MIN_HOURS,
+    STALE_CADENCE_MULTIPLIER,
+    STALE_FALLBACK_HOURS,
+    STALE_MIN_HOURS,
     STORAGE_SAVE_DELAY,
     STORAGE_VERSION,
     FTP_HOST,
@@ -145,6 +148,9 @@ class StationReading:
     rate_of_rise_m_per_hr: float | None
     rainfall_mm_1h: float | None
     rate_calculated_at: str | None = None
+    reading_age_min: float | None = None
+    stale_after_min: float | None = None
+    stale: bool = False
 
 
 def _ftp_connect() -> ftplib.FTP:
@@ -287,6 +293,7 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
         self._last_rates: dict[str, float] = {}
         self._rate_calculated_at: dict[str, datetime] = {}
         self._logged_missing: set[str] = set()
+        self._logged_stale: set[str] = set()
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}")
         super().__init__(
             hass,
@@ -363,6 +370,44 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
         observations.sort()
         cutoff = timestamp - timedelta(hours=RATE_HISTORY_HOURS)
         self._history[station_id] = [o for o in observations if o[0] >= cutoff]
+
+    def _typical_cadence_hours(self, station_id: str) -> float | None:
+        """Median gap between this gauge's observations, or None if too few."""
+        observations = self._history.get(station_id, [])
+        if len(observations) < 3:
+            return None
+        gaps = sorted(
+            (later[0] - earlier[0]).total_seconds() / 3600
+            for earlier, later in zip(observations, observations[1:])
+        )
+        middle = len(gaps) // 2
+        if len(gaps) % 2:
+            return gaps[middle]
+        return (gaps[middle - 1] + gaps[middle]) / 2
+
+    def _staleness(
+        self, station_id: str, timestamp: datetime | None
+    ) -> tuple[float | None, float | None, bool]:
+        """(age of reading, threshold, stale) in minutes.
+
+        Judged against the gauge's own cadence: three missed reports marks it
+        stale, floored so a fast-reporting gauge is not flagged for one late
+        reading, and falling back to a fixed window until enough observations
+        exist to know the cadence.
+        """
+        if timestamp is None:
+            return None, None, False
+        age_hours = (dt_util.utcnow() - timestamp).total_seconds() / 3600
+        cadence = self._typical_cadence_hours(station_id)
+        if cadence is None:
+            limit_hours = STALE_FALLBACK_HOURS
+        else:
+            limit_hours = max(STALE_MIN_HOURS, STALE_CADENCE_MULTIPLIER * cadence)
+        return (
+            round(age_hours * 60, 1),
+            round(limit_hours * 60, 1),
+            age_hours > limit_hours,
+        )
 
     def _windowed_rate(
         self, station_id: str, timestamp: datetime, level: float
@@ -471,6 +516,8 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
 
             flood_status = _derive_flood_status(level, meta)
 
+            age_min, stale_after_min, is_stale = self._staleness(station_id, curr_ts)
+
             rainfall: float | None = None
             if station_id in rain_data:
                 rainfall = rain_data[station_id][0]
@@ -489,7 +536,20 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                     if (calculated_at := self._rate_calculated_at.get(station_id))
                     else None
                 ),
+                reading_age_min=age_min,
+                stale_after_min=stale_after_min,
+                stale=is_stale,
             )
+            if is_stale and station_id not in self._logged_stale:
+                _LOGGER.warning(
+                    "BOM has not published a new reading for %s in %.0f minutes; "
+                    "the level shown is that old reading, not a current one",
+                    meta.name if meta else station_id,
+                    age_min or 0,
+                )
+                self._logged_stale.add(station_id)
+            elif not is_stale:
+                self._logged_stale.discard(station_id)
 
         if missing and not readings:
             # Every configured gauge is absent from the file. Failing loudly beats

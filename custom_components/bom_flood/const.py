@@ -82,6 +82,9 @@ ATTR_QUALITY = "quality"
 ATTR_RATE_OF_RISE = "rate_of_rise_m_per_hr"
 ATTR_RAINFALL_1H = "rainfall_mm_1h"
 ATTR_RATE_CALCULATED_AT = "rate_calculated_at"
+ATTR_READING_AGE_MIN = "reading_age_min"
+ATTR_STALE = "stale"
+ATTR_STALE_AFTER_MIN = "stale_after_min"
 ATTR_THRESHOLD_SOURCE = "threshold_source"
 ATTR_TIME_TO_MINOR = "time_to_minor_flood_hr"
 ATTR_TIME_TO_MODERATE = "time_to_moderate_flood_hr"
@@ -113,7 +116,16 @@ MAX_RATE_AGE_HOURS = 6
 # genuine sustained rise.
 RATE_WINDOW_MIN_HOURS = 0.5
 RATE_WINDOW_MAX_HOURS = 2.0
-RATE_HISTORY_HOURS = 3.0
+RATE_HISTORY_HOURS = 6.0
+
+# A gauge that goes quiet is more dangerous than a noisy one: the last reading
+# keeps being displayed as though it were current, and gauges tend to fail in
+# exactly the weather you care about. Staleness is judged against each gauge's
+# own observed cadence, since BOM gauges report anywhere from every 15 minutes
+# to every few hours.
+STALE_CADENCE_MULTIPLIER = 3
+STALE_MIN_HOURS = 1.0
+STALE_FALLBACK_HOURS = 3.0
 
 TREND_RISING = "rising"
 TREND_FALLING = "falling"

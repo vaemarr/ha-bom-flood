@@ -101,6 +101,27 @@ a flood sensor a confidently wrong number is worse than no number. The `rate_cal
 attribute gives the BOM observation time the current rate came from, so you can always tell
 a fresh calculation from a carried-over one.
 
+### Stale readings
+
+A gauge that stops reporting is more dangerous than a noisy one: the last value keeps being
+displayed as though it were current, and gauges fail in exactly the weather you care about.
+The water level sensor therefore exposes how old its reading is:
+
+| Attribute | Meaning |
+|---|---|
+| `reading_age_min` | Minutes since BOM observed the displayed value |
+| `stale_after_min` | Age at which this gauge counts as stale |
+| `stale` | `true` once the reading is older than that |
+
+Staleness is judged against each gauge's **own** cadence, because BOM gauges report anywhere
+from every 15 minutes to every few hours. Three missed reports marks a gauge stale, with a
+one hour floor so a fast gauge is not flagged for a single late report, and a three hour
+fallback until enough observations exist to know its cadence. Going stale is logged once, at
+warning level, naming the gauge and the age.
+
+The state itself is left alone — the reading is still the last thing BOM published, and
+hiding it would be worse. `stale` tells you not to trust it as current.
+
 ### Missing values
 
 Entities go **`unavailable`** only when BOM stops reporting the gauge altogether. When the
