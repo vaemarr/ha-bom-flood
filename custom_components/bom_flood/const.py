@@ -104,6 +104,17 @@ STORAGE_VERSION = 1
 STORAGE_SAVE_DELAY = 30
 MAX_RATE_AGE_HOURS = 6
 
+# Rate of rise is measured across a window rather than between consecutive
+# readings. BOM occasionally publishes a single wrong value — a gauge sitting at
+# 1.71 m reported 0.81 m once, then 1.61 m — and consecutive-sample maths turns
+# the rebound into a 3.2 m/h rise, which projects a flood that is not coming.
+# Measuring against a reading at least RATE_WINDOW_MIN_HOURS old dilutes a single
+# bad sample; capping at RATE_WINDOW_MAX_HOURS keeps the rate responsive to a
+# genuine sustained rise.
+RATE_WINDOW_MIN_HOURS = 0.5
+RATE_WINDOW_MAX_HOURS = 2.0
+RATE_HISTORY_HOURS = 3.0
+
 TREND_RISING = "rising"
 TREND_FALLING = "falling"
 TREND_STEADY = "steady"

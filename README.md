@@ -74,6 +74,19 @@ Each gauge gets four entities:
 | `Rate of Rise` | m/h | Positive = rising; survives restarts, expires after 6 h (see below) |
 | `Hourly Rainfall` | mm | `unknown` if BOM doesn't report rainfall for this gauge (about 57% of gauges) |
 
+### How rate of rise is measured
+
+The rate is measured against the oldest reading in a **30 minute to 2 hour window**, not
+against the previous reading. BOM occasionally publishes a single wrong value — a gauge
+steady at 1.71 m reported 0.81 m once, then 1.61 m — and consecutive-sample maths turns the
+rebound into a 3.2 m/h rise, which projects a flood roughly 1.4 hours away that is not
+coming. Measured across a window, the same series yields 0.08 m/h and no alarm, while a
+genuine sustained rise still produces a rate within about 30 minutes.
+
+The sensor reports `unknown` until a reading at least 30 minutes old exists. That is
+deliberate: a rate derived from two readings minutes apart is dominated by gauge noise, and
+this figure drives the flood projections.
+
 ### Rate of rise across restarts
 
 Rate of rise needs two gauge readings at different BOM timestamps. Those observations are

@@ -24,6 +24,9 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_RATE_AGE_HOURS,
+    RATE_HISTORY_HOURS,
+    RATE_WINDOW_MAX_HOURS,
+    RATE_WINDOW_MIN_HOURS,
     STORAGE_SAVE_DELAY,
     STORAGE_VERSION,
     FTP_HOST,
@@ -280,8 +283,7 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
             CONF_SCAN_INTERVAL,
             entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
         )
-        self._prev_levels: dict[str, float] = {}
-        self._prev_timestamps: dict[str, datetime] = {}
+        self._history: dict[str, list[tuple[datetime, float]]] = {}
         self._last_rates: dict[str, float] = {}
         self._rate_calculated_at: dict[str, datetime] = {}
         self._logged_missing: set[str] = set()
@@ -297,49 +299,94 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
         return dt_util.utcnow() - calculated_at <= timedelta(hours=MAX_RATE_AGE_HOURS)
 
     async def async_load_history(self) -> None:
-        """Restore the previous observation per gauge from disk.
+        """Restore each gauge's recent observations from disk.
 
-        Rate of rise needs two observations at different BOM timestamps. Holding
-        them only in memory meant every restart discarded the baseline and left
-        the sensor unknown until BOM published twice more — hours, on gauges that
-        report infrequently. Restoring the baseline lets the first poll after a
-        restart compute a real rate instead.
+        Rate of rise is measured across a window of readings. Holding them only
+        in memory meant every restart discarded the baseline and left the sensor
+        unknown until BOM published enough new readings — hours, on gauges that
+        report infrequently. Restoring them lets the first poll after a restart
+        compute a real rate instead.
         """
         stored = await self._store.async_load()
         if not stored:
             return
         for station_id, record in (stored.get("stations") or {}).items():
-            level = record.get("level")
-            timestamp = _parse_iso_timestamp(record.get("timestamp") or "")
-            if level is not None and timestamp is not None:
-                self._prev_levels[station_id] = level
-                self._prev_timestamps[station_id] = timestamp
+            observations = []
+            for timestamp, level in record.get("observations") or []:
+                parsed = _parse_iso_timestamp(timestamp)
+                if parsed is not None and level is not None:
+                    observations.append((parsed, level))
+            if not observations:
+                # Pre-window storage format: a single previous observation.
+                timestamp = _parse_iso_timestamp(record.get("timestamp") or "")
+                level = record.get("level")
+                if timestamp is not None and level is not None:
+                    observations = [(timestamp, level)]
+            if observations:
+                self._history[station_id] = sorted(observations)
+            if "observations" not in record:
+                # Pre-window record: its stored rate came from consecutive-sample
+                # maths, which a single bad reading can inflate. Drop it and let
+                # the next full window produce one.
+                continue
             rate = record.get("rate")
             calculated_at = _parse_iso_timestamp(record.get("rate_calculated_at") or "")
             if rate is not None and calculated_at is not None and self._rate_is_fresh(calculated_at):
                 self._last_rates[station_id] = rate
                 self._rate_calculated_at[station_id] = calculated_at
         _LOGGER.debug(
-            "Restored history for %d gauge(s), %d with a usable rate",
-            len(self._prev_levels),
+            "Restored observations for %d gauge(s), %d with a usable rate",
+            len(self._history),
             len(self._last_rates),
         )
 
     def _save_history(self) -> None:
         def snapshot() -> dict[str, Any]:
             stations: dict[str, Any] = {}
-            for station_id, level in self._prev_levels.items():
-                timestamp = self._prev_timestamps.get(station_id)
+            for station_id, observations in self._history.items():
                 calculated_at = self._rate_calculated_at.get(station_id)
                 stations[station_id] = {
-                    "level": level,
-                    "timestamp": timestamp.isoformat() if timestamp else None,
+                    "observations": [[ts.isoformat(), level] for ts, level in observations],
                     "rate": self._last_rates.get(station_id),
                     "rate_calculated_at": calculated_at.isoformat() if calculated_at else None,
                 }
             return {"stations": stations}
 
         self._store.async_delay_save(snapshot, STORAGE_SAVE_DELAY)
+
+    def _record_observation(self, station_id: str, timestamp: datetime, level: float) -> None:
+        """Append a reading and drop anything older than the history window."""
+        observations = self._history.setdefault(station_id, [])
+        if any(existing == timestamp for existing, _ in observations):
+            return
+        observations.append((timestamp, level))
+        observations.sort()
+        cutoff = timestamp - timedelta(hours=RATE_HISTORY_HOURS)
+        self._history[station_id] = [o for o in observations if o[0] >= cutoff]
+
+    def _windowed_rate(
+        self, station_id: str, timestamp: datetime, level: float
+    ) -> float | None:
+        """Rate of rise in m/hr measured against the oldest reading in the window.
+
+        Returns None until a reading at least RATE_WINDOW_MIN_HOURS old exists,
+        which is deliberate: a rate derived from two readings minutes apart is
+        dominated by gauge noise, and this figure drives flood projections.
+        """
+        candidates = [
+            (ts, lvl)
+            for ts, lvl in self._history.get(station_id, [])
+            if timedelta(hours=RATE_WINDOW_MIN_HOURS)
+            <= timestamp - ts
+            <= timedelta(hours=RATE_WINDOW_MAX_HOURS)
+        ]
+        if not candidates:
+            return None
+        baseline_ts, baseline_level = min(candidates)
+        hours = (timestamp - baseline_ts).total_seconds() / 3600
+        if hours <= 0:
+            return None
+        return round((level - baseline_level) / hours, 3)
 
     def _cached_rate(self, station_id: str) -> float | None:
         """Last computed rate, unless it has aged out."""
@@ -391,45 +438,36 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
             meta = self._station_meta.get(station_id)
             curr_ts = _parse_iso_timestamp(timestamp)
 
-            # Trend from level comparison
-            prev_level = self._prev_levels.get(station_id)
-            if level is None or prev_level is None:
-                trend = TREND_STEADY
-            elif level - prev_level > TREND_THRESHOLD_M:
-                trend = TREND_RISING
-            elif prev_level - level > TREND_THRESHOLD_M:
-                trend = TREND_FALLING
-            else:
-                trend = TREND_STEADY
-
-            # Rate of rise (m/hr) using HCS timestamps for accuracy
+            # Rate of rise (m/hr) measured across a window of BOM observations,
+            # not between consecutive ones — see RATE_WINDOW_MIN_HOURS.
             rate_of_rise: float | None = None
-            prev_ts = self._prev_timestamps.get(station_id)
-            if (
-                level is not None
-                and prev_level is not None
-                and curr_ts is not None
-                and prev_ts is not None
-            ):
-                dt_hours = (curr_ts - prev_ts).total_seconds() / 3600
-                if dt_hours > 0:
-                    rate_of_rise = round((level - prev_level) / dt_hours, 3)
-                    self._last_rates[station_id] = rate_of_rise
+            if level is not None and curr_ts is not None:
+                windowed = self._windowed_rate(station_id, curr_ts, level)
+                self._record_observation(station_id, curr_ts, level)
+                if windowed is not None:
+                    rate_of_rise = windowed
+                    self._last_rates[station_id] = windowed
                     self._rate_calculated_at[station_id] = curr_ts
                 else:
-                    # Same observation as last poll: BOM has not published a new
-                    # reading yet, so keep the rate that observation produced.
+                    # Not enough spread yet, or BOM has not published a new
+                    # reading — keep the rate the last full window produced.
                     rate_of_rise = self._cached_rate(station_id)
             elif level is not None:
                 rate_of_rise = self._cached_rate(station_id)
-
-            if level is None:
+            else:
                 self._last_rates.pop(station_id, None)
                 self._rate_calculated_at.pop(station_id, None)
+
+            # Trend follows the same windowed rate, so a single bad reading
+            # cannot flip a falling gauge to "rising".
+            if rate_of_rise is None:
+                trend = TREND_STEADY
+            elif rate_of_rise > TREND_THRESHOLD_M:
+                trend = TREND_RISING
+            elif rate_of_rise < -TREND_THRESHOLD_M:
+                trend = TREND_FALLING
             else:
-                self._prev_levels[station_id] = level
-            if curr_ts is not None:
-                self._prev_timestamps[station_id] = curr_ts
+                trend = TREND_STEADY
 
             flood_status = _derive_flood_status(level, meta)
 
