@@ -36,7 +36,7 @@ from .const import (
     FLOOD_STATUS_MAJOR,
     FLOOD_STATUS_MINOR,
     FLOOD_STATUS_MODERATE,
-    FLOOD_STATUS_UNKNOWN,
+    FLOOD_STATUS_NO_CLASSIFICATION,
 )
 from .coordinator import BomFloodCoordinator, StationMeta
 
@@ -166,7 +166,11 @@ class BomFloodLevelSensor(_BomFloodBaseSensor):
 
 
 class BomFloodStatusSensor(_BomFloodBaseSensor):
-    """Flood status as a readable state: Below Flood Level / Minor / Moderate / Major."""
+    """Flood status as a readable state, using BOM's own classification names.
+
+    Gauges BOM sets no thresholds for report "No Classification"; the state is
+    only 'unknown' when there is genuinely no reading to classify.
+    """
 
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = [
@@ -174,7 +178,7 @@ class BomFloodStatusSensor(_BomFloodBaseSensor):
         FLOOD_STATUS_MINOR,
         FLOOD_STATUS_MODERATE,
         FLOOD_STATUS_MAJOR,
-        FLOOD_STATUS_UNKNOWN,
+        FLOOD_STATUS_NO_CLASSIFICATION,
     ]
     _attr_icon = "mdi:water-alert"
 

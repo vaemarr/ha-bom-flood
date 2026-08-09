@@ -7,7 +7,7 @@ A Home Assistant custom integration that monitors river gauge levels and flood s
 ## Features
 
 - **Water level sensor** — live gauge height in metres, updated every 15 minutes
-- **Flood status sensor** — enumerated state: `Below Flood Level`, `Minor`, `Moderate`, `Major`, or `Unknown`
+- **Flood status sensor** — enumerated state using BOM's own classifications: `Below Flood Level`, `Minor`, `Moderate`, `Major`, or `No Classification` (a working gauge BOM publishes no flood thresholds for). The state is `unknown` only when there is no reading to classify.
 - **Rate of rise sensor** — water level change in m/hr (positive = rising, negative = falling); retains last known value between BOM update cycles
 - **Hourly rainfall sensor** — rainfall in mm for gauges that report it
 - **Time-to-flood attributes** — when a gauge is actively rising, the water level sensor exposes `time_to_minor_flood_hr`, `time_to_moderate_flood_hr`, and `time_to_major_flood_hr` (hours until each threshold is reached at the current rate)
@@ -21,8 +21,8 @@ BOM publishes two data products on their anonymous FTP at `ftp.bom.gov.au/anon/g
 
 | Product | Purpose |
 |---|---|
-| `IDQ65910_*.hcs` | National water level readings, updated every ~15 minutes |
-| `IDQ65901_*.hcs` | National hourly rainfall readings |
+| `IDZ65910_*.hcs` | National water level readings (~2,970 gauges), updated every ~15 minutes |
+| `IDZ65901_*.hcs` | National hourly rainfall readings (~3,780 stations) |
 | `IDQ65404.html` etc. | Regional HTML flood maps — used once at setup for station discovery |
 
 During setup the integration fetches the HTML flood map for your selected region to discover station names, coordinates, and flood thresholds (minor/moderate/major levels in metres). This metadata is stored in the config entry — no HTML parsing happens at runtime.
@@ -70,7 +70,7 @@ Each gauge gets four entities:
 | Entity | Unit | Notes |
 |---|---|---|
 | `Water Level` | m | Primary sensor; includes all attributes |
-| `Flood Status` | — | Enum: Below Flood Level / Minor / Moderate / Major / Unknown |
+| `Flood Status` | — | Enum: Below Flood Level / Minor / Moderate / Major / No Classification |
 | `Rate of Rise` | m/h | Positive = rising; retains last value when BOM hasn't updated |
 | `Hourly Rainfall` | mm | Unavailable if BOM doesn't report rainfall for this gauge |
 

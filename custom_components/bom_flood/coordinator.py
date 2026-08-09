@@ -26,7 +26,7 @@ from .const import (
     FLOOD_STATUS_MAJOR,
     FLOOD_STATUS_MINOR,
     FLOOD_STATUS_MODERATE,
-    FLOOD_STATUS_UNKNOWN,
+    FLOOD_STATUS_NO_CLASSIFICATION,
     HCS_RAINFALL_HOURLY_PREFIX,
     HCS_WATER_LEVEL_PREFIX,
     TREND_FALLING,
@@ -95,7 +95,7 @@ class StationReading:
     timestamp: str
     quality: int
     trend: str
-    flood_status: str
+    flood_status: str | None
     rate_of_rise_m_per_hr: float | None
     rainfall_mm_1h: float | None
 
@@ -201,9 +201,14 @@ def _parse_hcs(content: str, sensor_type: str) -> dict[str, tuple[float | None, 
     return result
 
 
-def _derive_flood_status(level: float | None, meta: StationMeta) -> str:
-    if level is None:
-        return FLOOD_STATUS_UNKNOWN
+def _derive_flood_status(level: float | None, meta: StationMeta | None) -> str | None:
+    """Classify a level against BOM's thresholds.
+
+    None (state 'unknown') means we cannot classify: no reading, or no stored
+    metadata. NO_CLASSIFICATION means we can, and BOM sets no thresholds here.
+    """
+    if level is None or meta is None:
+        return None
     if meta.major_m is not None and level >= meta.major_m:
         return FLOOD_STATUS_MAJOR
     if meta.moderate_m is not None and level >= meta.moderate_m:
@@ -212,7 +217,7 @@ def _derive_flood_status(level: float | None, meta: StationMeta) -> str:
         return FLOOD_STATUS_MINOR
     if meta.minor_m is not None:
         return FLOOD_STATUS_BELOW
-    return FLOOD_STATUS_UNKNOWN
+    return FLOOD_STATUS_NO_CLASSIFICATION
 
 
 def _parse_iso_timestamp(ts: str) -> datetime | None:
@@ -237,6 +242,7 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
         self._prev_levels: dict[str, float] = {}
         self._prev_timestamps: dict[str, datetime] = {}
         self._last_rates: dict[str, float] = {}
+        self._logged_missing: set[str] = set()
         super().__init__(
             hass,
             _LOGGER,
@@ -275,9 +281,10 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                 _LOGGER.warning("Rainfall HCS parse failed", exc_info=True)
 
         readings: dict[str, StationReading] = {}
+        missing: list[str] = []
         for station_id in self._station_ids:
             if station_id not in wl_data:
-                _LOGGER.debug("Station %s not found in HCS data", station_id)
+                missing.append(station_id)
                 continue
 
             level, timestamp, quality = wl_data[station_id]
@@ -318,7 +325,7 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
             if curr_ts is not None:
                 self._prev_timestamps[station_id] = curr_ts
 
-            flood_status = _derive_flood_status(level, meta) if meta else FLOOD_STATUS_UNKNOWN
+            flood_status = _derive_flood_status(level, meta)
 
             rainfall: float | None = None
             if station_id in rain_data:
@@ -334,5 +341,23 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                 rate_of_rise_m_per_hr=rate_of_rise,
                 rainfall_mm_1h=rainfall,
             )
+
+        if missing and not readings:
+            # Every configured gauge is absent from the file. Failing loudly beats
+            # returning an empty result, which leaves every entity unavailable with
+            # nothing in the log to explain why.
+            raise UpdateFailed(
+                f"None of the {len(missing)} configured gauge(s) were found in the "
+                f"BOM water level file ({HCS_WATER_LEVEL_PREFIX}); "
+                f"missing: {', '.join(missing)}"
+            )
+        if missing and not self._logged_missing.issuperset(missing):
+            _LOGGER.warning(
+                "No BOM water level data for gauge(s): %s. The remaining %d gauge(s) "
+                "are updating normally.",
+                ", ".join(sorted(missing)),
+                len(readings),
+            )
+        self._logged_missing = set(missing)
 
         return readings

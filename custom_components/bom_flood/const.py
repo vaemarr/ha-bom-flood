@@ -6,8 +6,11 @@ DEFAULT_SCAN_INTERVAL = 15  # minutes
 
 FTP_HOST = "ftp.bom.gov.au"
 FTP_PATH = "/anon/gen/fwo/"
-HCS_WATER_LEVEL_PREFIX = "IDQ65910"
-HCS_RAINFALL_HOURLY_PREFIX = "IDQ65901"
+# IDZ* are the national products. The per-state equivalents (IDQ/IDN/IDV/IDS/IDT)
+# only carry gauges in that state, and border region maps span two states, so the
+# national files are the only ones that cover every gauge offered during setup.
+HCS_WATER_LEVEL_PREFIX = "IDZ65910"
+HCS_RAINFALL_HOURLY_PREFIX = "IDZ65901"
 
 BOM_STATES: dict[str, str] = {
     "QLD": "Queensland",
@@ -74,11 +77,14 @@ ATTR_TIME_TO_MINOR = "time_to_minor_flood_hr"
 ATTR_TIME_TO_MODERATE = "time_to_moderate_flood_hr"
 ATTR_TIME_TO_MAJOR = "time_to_major_flood_hr"
 
+# Matches the vocabulary BOM uses on its own flood maps. "No Classification" is
+# what BOM publishes for a working gauge it has not set flood thresholds for —
+# distinct from the state being unknown, which means we have no reading at all.
 FLOOD_STATUS_BELOW = "Below Flood Level"
 FLOOD_STATUS_MINOR = "Minor"
 FLOOD_STATUS_MODERATE = "Moderate"
 FLOOD_STATUS_MAJOR = "Major"
-FLOOD_STATUS_UNKNOWN = "Unknown"
+FLOOD_STATUS_NO_CLASSIFICATION = "No Classification"
 
 TREND_RISING = "rising"
 TREND_FALLING = "falling"
