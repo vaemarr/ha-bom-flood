@@ -333,12 +333,37 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                 level = record.get("level")
                 if timestamp is not None and level is not None:
                     observations = [(timestamp, level)]
-            if observations:
-                self._history[station_id] = sorted(observations)
-            if "observations" not in record:
-                # Pre-window record: its stored rate came from consecutive-sample
-                # maths, which a single bad reading can inflate. Drop it and let
-                # the next full window produce one.
+            # Screen the restored series too. Observations recorded before the
+            # plausibility check existed can still hold a bad sample, and it
+            # would go on poisoning the rate for as long as it sits in the
+            # window — a restart must not reinstate a discredited reading.
+            cleaned: list[tuple[datetime, float]] = []
+            dropped: list[float] = []
+            for observed_at, value in sorted(observations):
+                if cleaned:
+                    previous_at, previous = cleaned[-1]
+                    hours = (observed_at - previous_at).total_seconds() / 3600
+                    if (
+                        hours > 0
+                        and abs(value - previous) / hours > MAX_PLAUSIBLE_RATE_M_PER_H
+                    ):
+                        dropped.append(value)
+                        continue
+                cleaned.append((observed_at, value))
+            if dropped:
+                _LOGGER.warning(
+                    "Discarded %d implausible stored reading(s) for %s: %s",
+                    len(dropped),
+                    station_id,
+                    ", ".join(f"{v:.2f} m" for v in dropped),
+                )
+            if cleaned:
+                self._history[station_id] = cleaned
+            if dropped or "observations" not in record:
+                # Either a pre-window record, whose rate came from
+                # consecutive-sample maths, or a series we just dropped a bad
+                # reading from — in both cases the stored rate was derived from
+                # data we no longer trust. Let the next full window produce one.
                 continue
             rate = record.get("rate")
             calculated_at = _parse_iso_timestamp(record.get("rate_calculated_at") or "")
