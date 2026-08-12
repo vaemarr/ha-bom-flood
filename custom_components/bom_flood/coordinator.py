@@ -21,8 +21,10 @@ from .const import (
     CONF_SCAN_INTERVAL,
     CONF_STATION_META,
     CONF_STATIONS,
+    DATUM_SHIFT_SAMPLES,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    MAX_PLAUSIBLE_RATE_M_PER_H,
     MAX_RATE_AGE_HOURS,
     RATE_HISTORY_HOURS,
     RATE_WINDOW_MAX_HOURS,
@@ -151,6 +153,7 @@ class StationReading:
     reading_age_min: float | None = None
     stale_after_min: float | None = None
     stale: bool = False
+    rejected_reading: float | None = None
 
 
 def _ftp_connect() -> ftplib.FTP:
@@ -294,6 +297,7 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
         self._rate_calculated_at: dict[str, datetime] = {}
         self._logged_missing: set[str] = set()
         self._logged_stale: set[str] = set()
+        self._rejected_runs: dict[str, int] = {}
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}")
         super().__init__(
             hass,
@@ -370,6 +374,54 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
         observations.sort()
         cutoff = timestamp - timedelta(hours=RATE_HISTORY_HOURS)
         self._history[station_id] = [o for o in observations if o[0] >= cutoff]
+
+    def _vet_reading(
+        self, station_id: str, timestamp: datetime, level: float
+    ) -> tuple[datetime, float, float | None]:
+        """Screen a reading for physical plausibility.
+
+        Returns the (timestamp, level) to use plus the rejected value, if any.
+        A reading implying more than MAX_PLAUSIBLE_RATE_M_PER_H against the last
+        accepted one is not a flood — it is a broken sample — so the last good
+        reading is held instead and the gauge ages towards stale, which is the
+        honest signal that usable data has stopped arriving.
+        """
+        observations = self._history.get(station_id)
+        if not observations:
+            return timestamp, level, None
+        last_ts, last_level = observations[-1]
+        hours = (timestamp - last_ts).total_seconds() / 3600
+        if hours <= 0:
+            return timestamp, level, None
+        if abs(level - last_level) / hours <= MAX_PLAUSIBLE_RATE_M_PER_H:
+            self._rejected_runs.pop(station_id, None)
+            return timestamp, level, None
+
+        run = self._rejected_runs.get(station_id, 0) + 1
+        self._rejected_runs[station_id] = run
+        if run >= DATUM_SHIFT_SAMPLES:
+            _LOGGER.warning(
+                "%s has reported %d consecutive readings near %.2f m, far from the "
+                "previous %.2f m; treating this as a datum change and accepting it",
+                station_id,
+                run,
+                level,
+                last_level,
+            )
+            self._history[station_id] = []
+            self._rejected_runs.pop(station_id, None)
+            return timestamp, level, None
+
+        _LOGGER.warning(
+            "Ignoring implausible reading for %s: %.2f m at %s implies %.0f m/h "
+            "against the previous %.2f m. Holding the last good reading.",
+            station_id,
+            level,
+            timestamp.isoformat(),
+            abs(level - last_level) / hours,
+            last_level,
+        )
+        return last_ts, last_level, level
 
     def _typical_cadence_hours(self, station_id: str) -> float | None:
         """Median gap between this gauge's observations, or None if too few."""
@@ -483,6 +535,13 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
             meta = self._station_meta.get(station_id)
             curr_ts = _parse_iso_timestamp(timestamp)
 
+            # Screen out physically impossible readings before they reach the
+            # level, the rate, the projections or the flood status.
+            rejected: float | None = None
+            if level is not None and curr_ts is not None:
+                curr_ts, level, rejected = self._vet_reading(station_id, curr_ts, level)
+                timestamp = curr_ts.isoformat().replace("+00:00", "Z")
+
             # Rate of rise (m/hr) measured across a window of BOM observations,
             # not between consecutive ones — see RATE_WINDOW_MIN_HOURS.
             rate_of_rise: float | None = None
@@ -539,6 +598,7 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                 reading_age_min=age_min,
                 stale_after_min=stale_after_min,
                 stale=is_stale,
+                rejected_reading=rejected,
             )
             if is_stale and station_id not in self._logged_stale:
                 _LOGGER.warning(

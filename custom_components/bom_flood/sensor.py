@@ -22,6 +22,7 @@ from .const import (
     ATTR_QUALITY,
     ATTR_RATE_CALCULATED_AT,
     ATTR_READING_AGE_MIN,
+    ATTR_REJECTED_READING,
     ATTR_STALE,
     ATTR_STALE_AFTER_MIN,
     ATTR_STATION_ID,
@@ -161,6 +162,8 @@ class BomFloodLevelSensor(_BomFloodBaseSensor):
             attrs[ATTR_READING_AGE_MIN] = r.reading_age_min
             attrs[ATTR_STALE_AFTER_MIN] = r.stale_after_min
             attrs[ATTR_STALE] = r.stale
+            if r.rejected_reading is not None:
+                attrs[ATTR_REJECTED_READING] = r.rejected_reading
         if self._meta:
             attrs[ATTR_MINOR_LEVEL] = self._meta.minor_m
             attrs[ATTR_MODERATE_LEVEL] = self._meta.moderate_m

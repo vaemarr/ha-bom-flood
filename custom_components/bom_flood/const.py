@@ -83,6 +83,7 @@ ATTR_RATE_OF_RISE = "rate_of_rise_m_per_hr"
 ATTR_RAINFALL_1H = "rainfall_mm_1h"
 ATTR_RATE_CALCULATED_AT = "rate_calculated_at"
 ATTR_READING_AGE_MIN = "reading_age_min"
+ATTR_REJECTED_READING = "rejected_reading"
 ATTR_STALE = "stale"
 ATTR_STALE_AFTER_MIN = "stale_after_min"
 ATTR_THRESHOLD_SOURCE = "threshold_source"
@@ -123,6 +124,16 @@ RATE_HISTORY_HOURS = 6.0
 # exactly the weather you care about. Staleness is judged against each gauge's
 # own observed cadence, since BOM gauges report anywhere from every 15 minutes
 # to every few hours.
+# Readings implying a physically impossible rate of change are rejected. This is
+# not statistical outlier rejection — a flash flood genuinely looks like a large
+# sudden jump, and filtering those would be dangerous. It is a physical bound: no
+# river gauge changes level at 10 m/h, let alone the 78 m/h implied when BOM
+# published -26.34 m for a gauge that had been sitting at 0.91 m. A run of
+# DATUM_SHIFT_SAMPLES consecutive rejections is treated as a genuine datum change
+# and accepted, so a re-levelled gauge cannot freeze the sensor permanently.
+MAX_PLAUSIBLE_RATE_M_PER_H = 10.0
+DATUM_SHIFT_SAMPLES = 3
+
 STALE_CADENCE_MULTIPLIER = 3
 STALE_MIN_HOURS = 1.0
 STALE_FALLBACK_HOURS = 3.0
