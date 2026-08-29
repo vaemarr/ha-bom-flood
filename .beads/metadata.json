@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "bomflood",
+  "project_id": "4477af56-cb26-4195-9671-155df0e3d365"
+}
