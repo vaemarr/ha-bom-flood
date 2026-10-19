@@ -1,0 +1,127 @@
+blueprint:
+  name: BOM Flood alert
+  description: >
+    Alerts for one BOM Flood Monitor gauge (pick its three entities): when the flood status escalates, when the
+    next flood level is expected within a set time, when the gauge stops reporting
+    while flooding, and when it falls back below flood level.
+    Not a substitute for official BOM warnings.
+  domain: automation
+  source_url: https://github.com/vaemarr/ha-bom-flood/blob/main/blueprints/automation/bom_flood/flood_alert.yaml
+  input:
+    status_entity:
+      name: Flood status
+      description: The gauge's Flood status sensor.
+      selector:
+        entity:
+          filter:
+            integration: bom_flood
+            domain: sensor
+            device_class: enum
+    next_entity:
+      name: Time to next flood level
+      selector:
+        entity:
+          filter:
+            integration: bom_flood
+            domain: sensor
+            device_class: duration
+    stale_entity:
+      name: Reading out of date
+      selector:
+        entity:
+          filter:
+            integration: bom_flood
+            domain: binary_sensor
+            device_class: problem
+    hours_ahead:
+      name: Early warning (hours)
+      description: Alert when the next flood level is expected within this many hours.
+      default: 3
+      selector:
+        number:
+          min: 0.5
+          max: 12
+          step: 0.5
+          unit_of_measurement: h
+    notify:
+      name: Alert actions
+      description: >
+        What to do. The variables `title` and `message` hold the alert text, e.g.
+        action notify.mobile_app_phone with message "{{ message }}".
+      selector:
+        action: {}
+
+mode: queued
+max_exceeded: silent
+
+variables:
+  status_entity: !input status_entity
+  next_entity: !input next_entity
+  stale_entity: !input stale_entity
+  hours_ahead: !input hours_ahead
+  name: "{{ state_attr(status_entity, 'friendly_name') | replace(' Flood status', '') }}"
+
+triggers:
+  - trigger: state
+    entity_id: !input status_entity
+    not_to: [unknown, unavailable]
+  - trigger: state
+    entity_id: !input next_entity
+  - trigger: state
+    entity_id: !input stale_entity
+    to: "on"
+
+actions:
+  - choose:
+      - alias: Status escalated
+        conditions:
+          - condition: template
+            value_template: >
+              {{ trigger.entity_id == status_entity and trigger.to_state is not none and trigger.from_state is not none
+                 and (trigger.to_state.attributes.severity | int(0)) >= 2
+                 and (trigger.to_state.attributes.severity | int(0)) > (trigger.from_state.attributes.severity | int(0)) }}
+        sequence:
+          - variables:
+              title: "Flood: {{ name }}"
+              message: "{{ name }} is now at {{ state_translated(status_entity) | lower }}."
+          - sequence: !input notify
+      - alias: All clear
+        conditions:
+          - condition: template
+            value_template: >
+              {{ trigger.entity_id == status_entity and trigger.to_state is not none and trigger.from_state is not none
+                 and trigger.to_state.state == 'below_flood_level'
+                 and (trigger.from_state.attributes.severity | int(0)) >= 2 }}
+        sequence:
+          - variables:
+              title: "All clear: {{ name }}"
+              message: "{{ name }} is back below flood level."
+          - sequence: !input notify
+      - alias: Next level soon
+        conditions:
+          - condition: template
+            value_template: >
+              {% set h = trigger.to_state.state | float(-1) if trigger.to_state is not none else -1 %}
+              {% set before = trigger.from_state.state | float(999) if trigger.from_state is not none else 999 %}
+              {{ trigger.entity_id == next_entity and 0 <= h <= hours_ahead and before > hours_ahead }}
+        sequence:
+          - variables:
+              title: "Rising: {{ name }}"
+              message: >
+                {{ name }} is rising and could reach
+                {{ state_attr(next_entity, 'next_level') }} flood level in as little as
+                {{ states(next_entity) | float | round(1) }} h.
+          - sequence: !input notify
+      - alias: Stopped reporting while flooding
+        conditions:
+          - condition: template
+            value_template: >
+              {{ trigger.entity_id == stale_entity and trigger.to_state is not none and trigger.to_state.state == 'on'
+                 and (state_attr(status_entity, 'severity') | int(0)) >= 2 }}
+        sequence:
+          - variables:
+              title: "Gauge silent: {{ name }}"
+              message: >
+                {{ name }} has stopped reporting while in flood. The level shown is
+                out of date; check BOM directly.
+          - sequence: !input notify

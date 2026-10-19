@@ -1,10 +1,15 @@
 {
   "domain": "bom_flood",
   "name": "BOM Flood Monitor",
-  "version": "0.1.0",
+  "codeowners": [
+    "@vaemarr"
+  ],
   "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/vaemarr/ha-bom-flood",
   "integration_type": "service",
   "iot_class": "cloud_polling",
-  "dependencies": [],
-  "requirements": []
+  "issue_tracker": "https://github.com/vaemarr/ha-bom-flood/issues",
+  "requirements": [],
+  "version": "2.0.0"
 }

@@ -1,0 +1,62 @@
+{
+  "entity": {
+    "sensor": {
+      "water_level": {
+        "default": "mdi:waves"
+      },
+      "flood_status": {
+        "default": "mdi:home-flood",
+        "state": {
+          "below_flood_level": "mdi:check-circle-outline",
+          "minor": "mdi:alert-outline",
+          "moderate": "mdi:alert",
+          "major": "mdi:alert-octagon",
+          "no_classification": "mdi:help-circle-outline"
+        }
+      },
+      "rate_of_rise": {
+        "default": "mdi:arrow-up-down"
+      },
+      "trend": {
+        "default": "mdi:trending-neutral",
+        "state": {
+          "rising": "mdi:trending-up",
+          "steady": "mdi:trending-neutral",
+          "falling": "mdi:trending-down"
+        }
+      },
+      "time_to_next_level": {
+        "default": "mdi:timer-sand"
+      },
+      "last_observed": {
+        "default": "mdi:clock-outline"
+      },
+      "rainfall": {
+        "default": "mdi:weather-pouring"
+      },
+      "stale_after": {
+        "default": "mdi:timer-cog-outline"
+      }
+    },
+    "binary_sensor": {
+      "stale": {
+        "default": "mdi:clock-check-outline",
+        "state": {
+          "on": "mdi:clock-alert-outline"
+        }
+      },
+      "flooding": {
+        "default": "mdi:home-outline",
+        "state": {
+          "on": "mdi:home-flood"
+        }
+      },
+      "bom_warning": {
+        "default": "mdi:bullhorn-outline",
+        "state": {
+          "on": "mdi:bullhorn"
+        }
+      }
+    }
+  }
+}
