@@ -139,6 +139,7 @@ def main() -> int:
     cross_n = cross_warned = 0
     lead_times: list[float] = []
     tim_n = tim_ok = tim_not_late = 0
+    early_n = early_ok = 0
     fa_n = fa_bad = 0
     per_event = defaultdict(lambda: [0, 0])
     examples: dict[str, list[str]] = defaultdict(list)
@@ -166,6 +167,10 @@ def main() -> int:
                     if 0.5 <= actual_h <= 6 and latest.level < thresholds[level]:
                         tim_n += 1
                         tol = max(TIMING_ABS_H, TIMING_REL * actual_h)
+                        if proj is not None:
+                            early_n += 1
+                            # One poll interval of slack: the next poll would show it.
+                            early_ok += actual_h >= A.earliest_hours(proj) - 0.25
                         if proj is not None and abs(proj - actual_h) <= tol:
                             tim_ok += 1
                             miss_reasons["within tolerance"] += 1
@@ -229,6 +234,9 @@ def main() -> int:
         "status": {"pct": _pct(st_ok, st_n), "n": st_n},
         "warning_recall": {"pct": _pct(cross_warned, cross_n), "n": cross_n,
                            "median_lead_h": lead_sorted[len(lead_sorted) // 2] if lead_sorted else None},
+        "earliest_time_not_too_late": {"pct": _pct(early_ok, early_n), "n": early_n,
+                                       "note": "in-sample; held-out estimate in const.py"},
+        "projection_shown_before_crossing": {"pct": _pct(early_n, tim_n), "n": tim_n},
         "timing_within_tolerance": {"pct": _pct(tim_ok, tim_n), "n": tim_n},
         "timing_not_late": {"pct": _pct(tim_not_late, tim_n), "n": tim_n},
         "false_alarm_rate": {"pct": _pct(fa_bad, fa_n), "n": fa_n},

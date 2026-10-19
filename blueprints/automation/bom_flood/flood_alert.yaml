@@ -108,9 +108,9 @@ actions:
           - variables:
               title: "Rising: {{ name }}"
               message: >
-                {{ name }} is rising and may reach
-                {{ state_attr(next_entity, 'next_level') }} flood level in about
-                {{ states(next_entity) | float | round(1) }} h at the current rate.
+                {{ name }} is rising and could reach
+                {{ state_attr(next_entity, 'next_level') }} flood level in as little as
+                {{ states(next_entity) | float | round(1) }} h.
           - sequence: !input notify
       - alias: Stopped reporting while flooding
         conditions:

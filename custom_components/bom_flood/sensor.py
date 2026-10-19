@@ -86,13 +86,20 @@ def _rate_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
 def _next_level_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
     level, _ = r.next_level(now)
     hours = r.hours_to(now)
+    earliest = r.earliest_to(now)
     return {
         "next_level": level,
+        # State: the earliest likely time (reached no earlier than this in ~94%
+        # of past floods). Straight-line times at the current rate follow.
+        "at_current_rate_h": hours[level] if level else None,
+        "earliest_minor_h": earliest["minor"],
+        "earliest_moderate_h": earliest["moderate"],
+        "earliest_major_h": earliest["major"],
         "time_to_minor_h": hours["minor"],
         "time_to_moderate_h": hours["moderate"],
         "time_to_major_h": hours["major"],
         "rate_m_per_h": r.rate(now),
-        "method": "current rate, straight line; not a BOM forecast",
+        "method": "earliest likely time, calibrated on past floods; not a BOM forecast",
     }
 
 

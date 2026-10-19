@@ -121,6 +121,9 @@
       },
       "flooding": {
         "name": "Flooding"
+      },
+      "bom_warning": {
+        "name": "BOM flood warning"
       }
     }
   }

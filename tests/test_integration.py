@@ -109,10 +109,15 @@ async def test_entities_and_values(hass, bom, freezer):
     assert state(hass, f"{L}_flood_status").attributes["severity"] == 2
     assert state(hass, f"{L}_trend").state == "rising"
     assert float(state(hass, f"{L}_rate_of_rise").state) == pytest.approx(0.5)
-    # Next level above 2.0 m is moderate at 3.0 m: 2 h at 0.5 m/h.
+    # Next level above 2.0 m is moderate at 3.0 m: 2 h at 0.5 m/h in a
+    # straight line; the state is the calibrated earliest likely time.
+    from custom_components.bom_flood.analysis import earliest_hours
+
     ttn = state(hass, f"{L}_time_to_next_flood_level")
-    assert float(ttn.state) == pytest.approx(2.0)
+    assert ttn.attributes["at_current_rate_h"] == pytest.approx(2.0)
+    assert float(ttn.state) == earliest_hours(2.0) < 2.0
     assert ttn.attributes["next_level"] == "moderate"
+    assert ttn.attributes["time_to_moderate_h"] == pytest.approx(2.0)
     assert state(hass, f"{L}_last_reading").state == NOW.isoformat()
     assert state(hass, f"{B}_reading_out_of_date").state == "off"
     assert state(hass, f"{B}_flooding").state == "on"
@@ -340,3 +345,32 @@ async def test_unexpected_unit_is_ignored(hass, bom, freezer):
     bom.publish(HCS_WATER_LEVEL_PREFIX, content)
     await poll(hass, entry, freezer, t)
     assert float(state(hass, f"{L}_water_level").state) == 1.0
+
+
+async def test_bom_flood_warning_for_gauge(hass, bom, freezer):
+    import pathlib
+
+    text = (pathlib.Path(__file__).parent / "fixtures" / "IDQ20885.txt").read_text()
+    publish(bom, NOW, series(NOW, 2, 1.0, 0.0))
+    entry = await setup(hass, bom, freezer)
+    assert state(hass, f"{B}_bom_flood_warning").state == "off"
+
+    bom.warnings["IDQ20885"] = text
+    await poll(hass, entry, freezer, NOW + timedelta(minutes=15))
+    s = state(hass, f"{B}_bom_flood_warning")
+    assert s.state == "on"
+    assert s.attributes["title"] == "Major Flood Warning for the Logan and Albert Rivers"
+    assert s.attributes["forecast_level_m"] == 13.5
+    assert s.attributes["forecast_when"] == "Monday afternoon"
+    assert state(hass, "binary_sensor.slacks_creek_bom_flood_warning").state == "off"
+
+    # A failed fetch keeps the last known warning instead of clearing it.
+    bom.fail_prefixes.add("warnings")
+    await poll(hass, entry, freezer, NOW + timedelta(minutes=30))
+    s = state(hass, f"{B}_bom_flood_warning")
+    assert s.state == "on" and s.attributes["warnings_checked"] is False
+
+    bom.fail_prefixes.clear()
+    bom.warnings.clear()
+    await poll(hass, entry, freezer, NOW + timedelta(minutes=45))
+    assert state(hass, f"{B}_bom_flood_warning").state == "off"

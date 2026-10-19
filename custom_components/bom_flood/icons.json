@@ -50,6 +50,12 @@
         "state": {
           "on": "mdi:home-flood"
         }
+      },
+      "bom_warning": {
+        "default": "mdi:bullhorn-outline",
+        "state": {
+          "on": "mdi:bullhorn"
+        }
       }
     }
   }

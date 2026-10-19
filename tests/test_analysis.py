@@ -5,6 +5,7 @@ the docstrings) so they cannot come back.
 """
 from __future__ import annotations
 
+import pathlib
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -402,3 +403,73 @@ def test_rainfall_too_old_is_dropped():
     rec = A.HcsRecord("1", at(0), 13.0, "mm", "", 3600, 3)
     assert A.fresh_rainfall(rec, at(90)) is rec
     assert A.fresh_rainfall(rec, at(150)) is None
+
+
+def test_earliest_time_is_earlier_and_monotonic():
+    """The calibrated earliest time is before the straight line and never
+    shows an earlier time for a longer projection."""
+    assert A.earliest_hours(None) is None
+    previous = 0.0
+    for tenth in range(1, 481):
+        projected = tenth / 10
+        earliest = A.earliest_hours(projected)
+        assert 0.1 <= earliest <= projected
+        assert earliest >= previous - 0.1  # rounding to 0.1 h
+        previous = earliest
+
+
+# ---------------------------------------------------------------------------
+# BOM flood warnings
+# ---------------------------------------------------------------------------
+
+WARNING = (pathlib.Path(__file__).parent / "fixtures" / "IDQ20885.txt").read_text()
+
+
+def test_parse_flood_warning():
+    w = A.parse_flood_warning("IDQ20885", WARNING)
+    assert w.title == "Major Flood Warning for the Logan and Albert Rivers"
+    assert w.severity == "major"
+    assert w.issued.startswith("4:52 am EST")
+    assert "Latest River Heights" not in w.body
+    assert w.url.endswith("IDQ20885.html")
+
+
+def test_forecast_for_gauge_with_peak():
+    w = A.parse_flood_warning("IDQ20885", WARNING)
+    f = A.gauge_forecast(w, "Logan River at Waterford")
+    assert f.level_m == 13.5
+    assert f.flood_class == "major"
+    assert f.when == "Monday afternoon"
+    assert len(f.sentences) == 2
+
+
+def test_forecast_remain_above():
+    w = A.parse_flood_warning("IDQ20885", WARNING)
+    f = A.gauge_forecast(w, "Albert River at Wolffdene")
+    assert f.level_m == 10.0 and f.flood_class == "major" and f.when == "during Monday"
+
+
+def test_mentioned_without_forecast():
+    w = A.parse_flood_warning("IDQ20885", WARNING)
+    f = A.gauge_forecast(w, "Albert River at Bromfleet")
+    assert f is not None and f.level_m is None
+    assert "peaked at 15.80 metres" in f.sentences[0]
+
+
+def test_unmentioned_gauge_and_table_only_mentions():
+    w = A.parse_flood_warning("IDQ20885", WARNING)
+    assert A.gauge_forecast(w, "Coomera River at Canungra Army") is None
+
+
+def test_marine_and_weather_warnings_ignored():
+    marine = "IDT20100\nAustralian Government Bureau of Meteorology\nTasmania\n\nMarine Wind Warning Summary for Tasmania\n"
+    assert A.parse_flood_warning("IDT20100", marine) is None
+    watch = "IDN36501\nAustralian Government Bureau of Meteorology\nNew South Wales\n\nFlood Watch for the Hawkesbury River\nIssued at 1:00 pm\n"
+    assert A.parse_flood_warning("IDN36501", watch).title == "Flood Watch for the Hawkesbury River"
+
+
+def test_warning_file_names():
+    assert A.WARNING_FILE_RE.match("IDQ20885.txt")
+    assert A.WARNING_FILE_RE.match("IDN36501.txt")
+    assert not A.WARNING_FILE_RE.match("IDQ65404.html")
+    assert not A.WARNING_FILE_RE.match("IDZ65910_20261019.hcs")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ftplib
+import pathlib
 from unittest.mock import patch
 
 import pytest
@@ -32,8 +33,8 @@ class FakeFTP:
         assert path == "/anon/gen/fwo/"
 
     def nlst(self, pattern):
-        prefix = pattern.split("*")[0]
-        return [n for n in self.files if n.startswith(prefix)]
+        import fnmatch
+        return [n for n in self.files if fnmatch.fnmatch(n, pattern)]
 
     def retrbinary(self, cmd, callback):
         name = cmd.split(" ", 1)[1]
@@ -53,6 +54,8 @@ def fake_ftp():
     FakeFTP.files = {
         "IDZ65910_20261019093800.hcs": hcs([("WL", "1", NOW, 1.0)]).encode(),
         "IDZ65910_20261019095300.hcs": hcs([("WL", "1", NOW, 1.5)]).encode(),
+        "IDQ20885.txt": (pathlib.Path(__file__).parent / "fixtures" / "IDQ20885.txt").read_bytes(),
+        "IDT20100.txt": b"IDT20100\nAustralian Government Bureau of Meteorology\nTasmania\n\nMarine Wind Warning Summary\n",
         "IDQ65404.html": b"PopupRiver(&quot;A River at B&quot;,'1','-27','153','1.0','Below Flood Level','steady','x','2','3','4','c')",
     }
     FakeFTP.fail_times = 0
@@ -101,3 +104,8 @@ def test_optional_feed_returns_none_on_failure_or_unchanged():
     assert C.BomFloodCoordinator._fetch_optional("IDZ65910", "WL", name) is None
     got = C.BomFloodCoordinator._fetch_optional("IDZ65910", "WL", "older")
     assert got[0] == name
+
+
+def test_fetch_flood_warnings_filters_to_floods():
+    warnings = C._fetch_flood_warnings()
+    assert [w.product_id for w in warnings] == ["IDQ20885"]

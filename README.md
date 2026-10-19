@@ -20,7 +20,8 @@ Each gauge you pick becomes a device with these entities:
 | **Water level** | `2.41 m` | The latest reading BOM published |
 | **Trend** | `Rising` | Rising, Steady or Falling, from the last hour of readings |
 | **Rate of rise** | `+0.35 m/h` | How fast the level is changing |
-| **Time to next flood level** | `2.6 h` | When the next flood level is reached *if the current rate continues* (see [accuracy](#how-accurate-is-it)) |
+| **Time to next flood level** | `1.1 h` | The **earliest likely** time the next flood level is reached, while the river is rising (see [accuracy](#how-accurate-is-it)) |
+| **BOM flood warning** | `On` | A current official BOM flood warning names this gauge; attributes carry the title, BOM's forecast level and timing, and a link |
 | **Last reading** | `12 minutes ago` | When BOM observed the level shown |
 | **Reading out of date** | `On` | The gauge has stopped reporting. Don't trust the level as current |
 | **Flooding** | `On` | The gauge is at Minor flood or above |
@@ -52,15 +53,25 @@ Results (October 2026):
 | Flood status correct throughout real floods | **99.9%** | 1.03 million replayed polls |
 | Trend equals BOM's displayed trend | **95%** | 13,200 readings |
 | Flood levels reached with a warning at least 1 h ahead | **93%** (typically 5.4 h ahead) | 1,115 crossings, 127 gauges, 6 floods |
-| Time to next level within ±30% (min ±30 min) of when it actually happened | **38%** | projections made 0.5–6 h before a crossing |
-| Projected "within 6 h" but not reached within 12 h | 36% | |
+| Time to next flood level (earliest likely) was not later than the real time | **93.6%** (every flood ≥ 90.5%) | projections made 0.5–6 h before a crossing, tested on floods held out of the calibration |
+| A time to next flood level was showing 0.5–6 h before a crossing | 79% | the rest of the time the river was not yet rising |
+| Straight-line time (`at_current_rate_h` attribute) within ±30% of the real time | 38% | same moments |
 
-Why the time is so often off, from the same replay: the river sped up after the
-projection (31%), it wasn't rising yet at that moment (17%), or it slowed down (10%).
-Those are things a single gauge cannot know in advance; forecasting them takes rainfall
-and upstream gauges, which is what BOM's flood forecasters do. Five other projection
-methods were tried (shorter and longer windows, curve fitting, a decaying rate,
-combinations); none got the timing above about 44% without making warnings later.
+**Why "earliest likely" rather than a single time.** A straight line from the current
+rate is right to within 30% only 38% of the time: the river speeds up after the
+projection (31% of cases), isn't rising yet (17%), or slows down (10%). Nine methods
+were tried to do better from the gauge data alone (other windows, curve fitting, a
+decaying rate, a learned model, upstream gauges); none passed 44%. So the entity
+shows a time calibrated on past floods to be early rather than late: the river reached
+the level no earlier than the time shown in 93.6% of cases. It is deliberately
+cautious, typically about 40% of the real time, so "1.1 h" means "possibly in about an
+hour; act as if it could be". The straight-line time stays in the
+`at_current_rate_h` attribute.
+
+**BOM's official warnings come first.** When BOM issues a flood warning naming a gauge,
+its forecast (level, class and timing, written by BOM's forecasters using rainfall and
+catchment models) appears on the *BOM flood warning* entity. Past BOM warnings are not
+archived publicly, so their accuracy could not be scored here.
 
 **What this means in practice**
 
@@ -68,11 +79,9 @@ combinations); none got the timing above about 44% without making warnings later
 - **A warning normally comes well ahead of a flood level being reached.** In past floods
   the time-to-next-level appeared at least an hour before the level was reached in most
   cases, typically about five hours ahead.
-- **The time itself is a rough guide, not a forecast.** It assumes the river keeps
-  rising at its current rate. Rivers speed up early in a flood and slow down near the
-  peak, so the real time is often earlier at the start and the level is sometimes never
-  reached at the end. Treat "2.6 h" as "within a few hours", and use BOM's official
-  forecast peaks for planning.
+- **The time to next flood level errs early on purpose.** Treat it as "could be this
+  soon". The level is often reached later, and sometimes not at all.
+- **Use BOM's official forecast when there is one**, shown on the *BOM flood warning* entity.
 
 ## How it works
 
@@ -83,6 +92,7 @@ BOM publishes these on its anonymous FTP server (`ftp.bom.gov.au/anon/gen/fwo/`)
 | `IDZ65910` | Latest water level for every gauge, every ~15 minutes |
 | `IDZ65911` | Every reading from the last ~3 hours, hourly. Fills gaps and restores history after a restart |
 | `IDZ65901` | Hourly rainfall |
+| Flood warnings (`IDQ2xxxx`, `IDN3xxxx`, ...) | Official BOM flood warnings and watches, checked every poll |
 | Regional maps (`IDQ65404.html` etc.) | Gauge names, flood levels, and BOM's own displayed status. Read at setup and again every hour |
 
 Every poll:
@@ -174,7 +184,7 @@ actions:
       message: "Logan River at Waterford: {{ state_translated(trigger.entity_id) }}"
 ```
 
-**Next flood level expected within 2 hours:**
+**Next flood level possibly within 2 hours:**
 ```yaml
 triggers:
   - trigger: numeric_state
@@ -184,9 +194,9 @@ actions:
   - action: notify.mobile_app_phone
     data:
       message: >
-        Logan River at Waterford may reach
+        Logan River at Waterford could reach
         {{ state_attr('sensor.logan_river_at_waterford_time_to_next_flood_level', 'next_level') }}
-        flood level in about
+        flood level in as little as
         {{ states('sensor.logan_river_at_waterford_time_to_next_flood_level') }} h.
 ```
 

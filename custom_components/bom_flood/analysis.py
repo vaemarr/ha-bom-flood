@@ -9,6 +9,7 @@ Times are always timezone-aware UTC datetimes. Callers pass `now` explicitly.
 from __future__ import annotations
 
 import csv
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,8 @@ from collections.abc import Iterable
 
 from .const import (
     DATUM_SHIFT_SAMPLES,
+    EARLIEST_BAND_MIDPOINTS_H,
+    EARLIEST_FACTORS,
     FLOOD_STATUS_BELOW,
     FLOOD_STATUS_MAJOR,
     FLOOD_STATUS_MINOR,
@@ -315,6 +318,28 @@ def hours_to_level(level: float | None, rate: float | None, threshold: float | N
     return round(hours, 1)
 
 
+def earliest_hours(projected: float | None) -> float | None:
+    """Earliest likely hours to a level, from the straight-line projection.
+
+    Rivers usually speed up before a flood level, so a straight line tends to
+    be late. This scales it by a factor calibrated on historical floods such
+    that the real time was no earlier than this in about 94% of cases.
+    """
+    if projected is None:
+        return None
+    x = math.log(max(projected, 1e-3))
+    mids = [math.log(m) for m in EARLIEST_BAND_MIDPOINTS_H]
+    if x <= mids[0]:
+        factor = EARLIEST_FACTORS[0]
+    elif x >= mids[-1]:
+        factor = EARLIEST_FACTORS[-1]
+    else:
+        i = next(k for k in range(len(mids) - 1) if mids[k] <= x <= mids[k + 1])
+        f = (x - mids[i]) / (mids[i + 1] - mids[i])
+        factor = EARLIEST_FACTORS[i] + f * (EARLIEST_FACTORS[i + 1] - EARLIEST_FACTORS[i])
+    return round(max(projected * factor, 0.1), 1)
+
+
 def theil_sen_slope(points: list[tuple[float, float]]) -> float | None:
     """Median of pairwise slopes: robust to a minority of bad samples."""
     slopes = []
@@ -599,3 +624,99 @@ def fresh_rainfall(record: HcsRecord | None, now: datetime) -> HcsRecord | None:
     if _hours(record.observed_at, now) > RAINFALL_MAX_AGE_HOURS:
         return None
     return record
+
+
+# ---------------------------------------------------------------------------
+# BOM flood warnings
+# ---------------------------------------------------------------------------
+
+# Flood warning products are ID<state>2xxxx (QLD) or ID<state>3xxxx (others);
+# BOM's FTP only holds products that are current, so listing the folder lists
+# the active warnings. Weather and marine warnings share these id ranges and
+# are told apart by their title.
+WARNING_FILE_RE = re.compile(r"^ID[QNVST][23]\d{4}\.txt$")
+_TITLE_RE = re.compile(r"^.*\bFlood (?:Warning|Watch)\b.*$", re.IGNORECASE | re.MULTILINE)
+_ISSUED_RE = re.compile(r"^Issued at (.+)$", re.MULTILINE)
+_CLASS_RE = re.compile(r"\b(minor|moderate|major)\b", re.IGNORECASE)
+_FORECAST_RE = re.compile(
+    r"\b(?:is|are)\s+(?:likely|expected|forecast)\s+to\s+"
+    r"(?P<verb>reach|peak|exceed|remain|rise\s+to|ease\s+to|fall\s+to)\s+"
+    r"(?:(?:around|near|above|below|at|about)\s+)?"
+    r"(?P<level>-?\d+(?:\.\d+)?)\s*(?:m\b|metres?)"
+    r"(?P<rest>[^.]*)",
+    re.IGNORECASE,
+)
+_STOP_SECTIONS = re.compile(r"^(Latest River Heights|River Heights|Next issue|Warning Information)\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class FloodWarning:
+    product_id: str
+    title: str
+    issued: str | None
+    severity: str | None  # minor / moderate / major from the title, if stated
+    body: str             # narrative text, without the river height table
+
+    @property
+    def url(self) -> str:
+        return f"https://www.bom.gov.au/cgi-bin/wrap_fwo.pl?{self.product_id}.html"
+
+
+@dataclass(frozen=True)
+class GaugeForecast:
+    sentences: tuple[str, ...]
+    level_m: float | None
+    flood_class: str | None
+    when: str | None
+
+
+def parse_flood_warning(product_id: str, text: str) -> FloodWarning | None:
+    """Parse a BOM flood warning text product; None if it is not a flood warning."""
+    head = "\n".join(text.splitlines()[:12])
+    title_match = _TITLE_RE.search(head)
+    if title_match is None or "marine" in title_match.group(0).lower():
+        return None
+    title = " ".join(title_match.group(0).split())
+    issued = _ISSUED_RE.search(text)
+    severity = _CLASS_RE.search(title)
+    body_lines = []
+    for line in text.splitlines():
+        if _STOP_SECTIONS.match(line.strip()):
+            break
+        body_lines.append(line)
+    return FloodWarning(
+        product_id=product_id,
+        title=title,
+        issued=issued.group(1).strip() if issued else None,
+        severity=severity.group(1).lower() if severity else None,
+        body="\n".join(body_lines),
+    )
+
+
+def _location_pattern(gauge_name: str) -> re.Pattern[str]:
+    """Match a gauge name allowing BOM's spacing and 'River'/'R' variations."""
+    words = [re.escape(w) for w in gauge_name.split()]
+    pattern = r"\s+".join(words)
+    pattern = pattern.replace(r"River", r"R(?:iver|\.)?")
+    return re.compile(pattern, re.IGNORECASE)
+
+
+def gauge_forecast(warning: FloodWarning, gauge_name: str) -> GaugeForecast | None:
+    """What a warning says about one gauge, or None if it does not mention it."""
+    location = _location_pattern(gauge_name)
+    flat = " ".join(warning.body.split())
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", flat) if location.search(s)]
+    if not sentences:
+        return None
+    level = flood_class = when = None
+    for sentence in sentences:
+        match = _FORECAST_RE.search(sentence)
+        if match is None:
+            continue
+        level = safe_float(match.group("level"))
+        rest = match.group("rest")
+        cls = _CLASS_RE.search(rest)
+        flood_class = cls.group(1).lower() if cls else None
+        when_part = re.split(r",|\bwith\b", rest, maxsplit=1)[0].strip()
+        when = when_part or None
+    return GaugeForecast(tuple(sentences), level, flood_class, when)

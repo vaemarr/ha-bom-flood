@@ -48,6 +48,7 @@ class FakeBom:
         self.maps: dict[str, str] = {}
         self.fail_prefixes: set[str] = set()
         self.calls: list[str] = []
+        self.warnings: dict[str, str] = {}  # product id -> text
         self._serial = 0
 
     def publish(self, prefix: str, content: str) -> None:
@@ -72,12 +73,23 @@ class FakeBom:
             raise ftplib.error_temp("421 BOM unavailable")
         return self.maps[product]
 
+    def fetch_warnings(self) -> list[A.FloodWarning]:
+        if "warnings" in self.fail_prefixes:
+            raise ftplib.error_temp("421 BOM unavailable")
+        out = []
+        for pid, text in sorted(self.warnings.items()):
+            w = A.parse_flood_warning(pid, text)
+            if w:
+                out.append(w)
+        return out
+
     def patch(self):
         base = "custom_components.bom_flood.coordinator"
         return _Patches(
             patch(f"{base}._latest_name", side_effect=self.latest_name),
             patch(f"{base}._fetch_named", side_effect=self.fetch_named),
             patch(f"{base}._fetch_html_map", side_effect=self.fetch_map),
+            patch(f"{base}._fetch_flood_warnings", side_effect=self.fetch_warnings),
             patch(f"{base}.time.sleep"),
         )
 

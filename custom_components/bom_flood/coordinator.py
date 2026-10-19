@@ -174,6 +174,9 @@ class StationReading:
     bom_status: str | None = None
     bom_trend: str | None = None
     feed_ok: bool = True
+    warning: A.FloodWarning | None = None
+    forecast: A.GaugeForecast | None = None
+    warnings_ok: bool | None = None
 
     # Time-dependent values are derived on read, so a reading displayed long
     # after it was fetched (a hung or failing feed) still ages honestly.
@@ -203,15 +206,19 @@ class StationReading:
             for name in LEVEL_KEYS
         }
 
+    def earliest_to(self, now: datetime) -> dict[str, float | None]:
+        """Earliest likely hours to each level (calibrated, conservative)."""
+        return {name: A.earliest_hours(h) for name, h in self.hours_to(now).items()}
+
     def next_level(self, now: datetime) -> tuple[str | None, float | None]:
-        """The lowest flood level not yet reached, and hours to it if rising."""
+        """The lowest flood level not yet reached, and the earliest likely hours to it."""
         if self.level is None:
             return None, None
-        hours = self.hours_to(now)
+        earliest = self.earliest_to(now)
         for name in LEVEL_KEYS:
             threshold = self.thresholds.get(name)
             if threshold is not None and self.level < threshold:
-                return name, hours[name]
+                return name, earliest[name]
         return None, None
 
 
@@ -272,6 +279,21 @@ def _fetch_html_map(product_code: str) -> str:
     ftp = _ftp_connect()
     try:
         return _download(ftp, f"{product_code}.html")
+    finally:
+        _quit(ftp)
+
+
+def _fetch_flood_warnings() -> list[A.FloodWarning]:
+    """Every current BOM flood warning or watch, nationally."""
+    ftp = _ftp_connect()
+    try:
+        names = [n for n in ftp.nlst("ID*.txt") if A.WARNING_FILE_RE.match(n)]
+        warnings = []
+        for name in sorted(names):
+            warning = A.parse_flood_warning(name[:-4], _download(ftp, name))
+            if warning is not None:
+                warnings.append(warning)
+        return warnings
     finally:
         _quit(ftp)
 
@@ -337,6 +359,8 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
         self._logged_unit: set[str] = set()
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}")
         self._last_rain: dict[str, A.HcsRecord] = {}
+        self._warnings: list[A.FloodWarning] = []
+        self._warnings_ok: bool | None = None
         self._last_quality: dict[str, int | None] = {}
 
     @property
@@ -505,13 +529,29 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
         dense_task = run(
             self._fetch_optional, HCS_WATER_LEVEL_DENSE_PREFIX, "WL", self._dense.last_name
         )
-        wl, rain_result, dense_result = await asyncio.gather(wl_task, rain_task, dense_task)
+        warn_task = run(self._fetch_warnings_safe)
+        wl, rain_result, dense_result, warnings = await asyncio.gather(
+            wl_task, rain_task, dense_task, warn_task
+        )
+        if warnings is not None:
+            self._warnings, self._warnings_ok = warnings, True
+        else:
+            # Keep the last list rather than silently clearing an active warning.
+            self._warnings_ok = False
         rain = rain_result[1] if rain_result else None
         dense = None
         if dense_result:
             self._dense.last_name, dense = dense_result
             self._dense.fetched_at = now
         return wl, rain, dense
+
+    @staticmethod
+    def _fetch_warnings_safe() -> list[A.FloodWarning] | None:
+        try:
+            return _with_retries(_fetch_flood_warnings)
+        except Exception as exc:  # noqa: BLE001 - warnings are supplementary
+            _LOGGER.debug("BOM flood warnings unavailable: %s", exc)
+            return None
 
     @staticmethod
     def _fetch_optional(
@@ -666,6 +706,7 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                 status = None
             rain = A.fresh_rainfall(self._last_rain.get(station_id), now)
             bom_status, bom_trend = self._thresholds.bom_status.get(station_id, (None, None))
+            warning, forecast = self._warning_for(meta.name if meta else None)
             readings[station_id] = StationReading(
                 station_id=station_id,
                 name=meta.name if meta else station_id,
@@ -689,8 +730,28 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                 bom_status=bom_status,
                 bom_trend=bom_trend,
                 feed_ok=feed_ok,
+                warning=warning,
+                forecast=forecast,
+                warnings_ok=self._warnings_ok,
             )
         return readings
+
+    def _warning_for(
+        self, gauge_name: str | None
+    ) -> tuple[A.FloodWarning | None, A.GaugeForecast | None]:
+        """The most severe current warning that names this gauge."""
+        if not gauge_name:
+            return None, None
+        rank = {"major": 3, "moderate": 2, "minor": 1}
+        best: tuple[int, A.FloodWarning, A.GaugeForecast] | None = None
+        for warning in self._warnings:
+            forecast = A.gauge_forecast(warning, gauge_name)
+            if forecast is None:
+                continue
+            score = rank.get(warning.severity or "", 0) * 10 + (forecast.level_m is not None)
+            if best is None or score > best[0]:
+                best = (score, warning, forecast)
+        return (best[1], best[2]) if best else (None, None)
 
     def _log_gaps(self, now: datetime, readings: dict[str, StationReading]) -> None:
         missing = sorted(set(self._station_ids) - set(readings))

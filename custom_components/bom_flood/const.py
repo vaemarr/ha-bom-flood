@@ -154,6 +154,16 @@ RATE_HISTORY_HOURS = 8.0
 # Flood projections beyond this many hours are not shown.
 PROJECTION_HORIZON_HOURS = 48.0
 
+# "Earliest likely" time to a flood level: the straight-line projection scaled
+# down by a factor learnt from six historical floods (2011-2022, 1,115 threshold
+# crossings, tools/backtest_floods.py). The factor is the 3rd percentile of
+# actual / projected time, by projection length, so the level was reached no
+# earlier than the time shown in 93.6% of cases on floods held out of the
+# calibration (worst single flood 90.5%). Interpolated in log-hours between the
+# midpoints of the calibration bands, which keeps the result monotonic.
+EARLIEST_BAND_MIDPOINTS_H = (0.5, 1.41, 2.83, 5.66, 11.3, 27.7)
+EARLIEST_FACTORS = (0.262, 0.379, 0.367, 0.33, 0.252, 0.157)
+
 # Physical plausibility of a step between two readings. Not outlier statistics:
 # a flash flood genuinely looks like a sudden jump, so rises are given a generous
 # bound. Falls are physically slower and are the usual shape of a sensor fault

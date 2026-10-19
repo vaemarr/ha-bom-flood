@@ -37,12 +37,32 @@ def _stale_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
     }
 
 
+def _warning_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
+    w, f = r.warning, r.forecast
+    return {
+        "title": w.title if w else None,
+        "issued": w.issued if w else None,
+        "url": w.url if w else None,
+        "forecast_level_m": f.level_m if f else None,
+        "forecast_class": f.flood_class if f else None,
+        "forecast_when": f.when if f else None,
+        "bom_says": " ".join(f.sentences)[:600] if f else None,
+        "warnings_checked": r.warnings_ok,
+    }
+
+
 BINARY_SENSORS: tuple[BomBinaryDescription, ...] = (
     BomBinaryDescription(
         key="stale",
         device_class=BinarySensorDeviceClass.PROBLEM,
         is_on_fn=lambda r, now: r.is_stale(now),
         attrs_fn=_stale_attrs,
+    ),
+    BomBinaryDescription(
+        key="bom_warning",
+        device_class=BinarySensorDeviceClass.SAFETY,
+        is_on_fn=lambda r, now: (r.warning is not None) if r.warnings_ok is not None else None,
+        attrs_fn=_warning_attrs,
     ),
     BomBinaryDescription(
         key="flooding",
