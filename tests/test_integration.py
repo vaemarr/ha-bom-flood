@@ -318,3 +318,25 @@ async def test_gauge_missing_from_feed_is_unavailable(hass, bom, freezer):
     await setup(hass, bom, freezer)
     assert float(state(hass, f"{L}_water_level").state) == 1.0
     assert state(hass, "sensor.slacks_creek_water_level").state == STATE_UNAVAILABLE
+
+
+async def test_diagnostics(hass, bom, freezer):
+    from custom_components.bom_flood.diagnostics import async_get_config_entry_diagnostics
+
+    publish(bom, NOW, series(NOW, 2, 1.0, 0.5))
+    entry = await setup(hass, bom, freezer)
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+    gauge = diag["coordinator"]["gauges"][LOGAN]
+    assert gauge["rate"]["rate_m_per_h"] == pytest.approx(0.5)
+    assert gauge["meta"]["minor_m"] == 2.0
+    assert len(gauge["history"]) >= 8
+
+
+async def test_unexpected_unit_is_ignored(hass, bom, freezer):
+    publish(bom, NOW, series(NOW, 2, 1.0, 0.0))
+    entry = await setup(hass, bom, freezer)
+    t = NOW + timedelta(minutes=15)
+    content = hcs([("WL", LOGAN, t, 150.0), ("WL", CREEK, t, 0.4)]).replace('150.0,"metres"', '150.0,"centimetres"')
+    bom.publish(HCS_WATER_LEVEL_PREFIX, content)
+    await poll(hass, entry, freezer, t)
+    assert float(state(hass, f"{L}_water_level").state) == 1.0

@@ -244,7 +244,7 @@ class BomFloodOptionsFlow(OptionsFlow):
         """
         fields = []
         for meta in unclassified:
-            for key, label in zip(THRESHOLD_KEYS, ("Minor", "Moderate", "Major")):
+            for key, label in zip(THRESHOLD_KEYS, ("Minor", "Moderate", "Major"), strict=True):
                 fields.append((f"{meta.get('name', meta['station_id'])} ({meta['station_id']}): {label} (m)", meta["station_id"], key))
         return fields
 

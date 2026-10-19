@@ -129,9 +129,13 @@ TREND_RISING = "rising"
 TREND_FALLING = "falling"
 TREND_STEADY = "steady"
 TREND_OPTIONS = [TREND_RISING, TREND_STEADY, TREND_FALLING]
-# Below this rate (m/h, either direction) a gauge is "steady", and no flood
-# projection is made from it.
+# A gauge is "rising" above TREND_THRESHOLD_M_PER_H and "falling" below
+# -TREND_FALLING_THRESHOLD_M_PER_H; in between it is "steady", and no flood
+# projection is made. The band is deliberately asymmetric: missing a rise is
+# the dangerous error, so rises are reported sooner. Calibrated against BOM's
+# own displayed trend (tools/validate.py): 95% agreement.
 TREND_THRESHOLD_M_PER_H = 0.01
+TREND_FALLING_THRESHOLD_M_PER_H = 0.02
 
 STORAGE_VERSION = 1
 STORAGE_SAVE_DELAY = 30

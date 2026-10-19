@@ -165,6 +165,8 @@ def test_unknown_rate_is_unknown_trend_not_steady():
     assert A.trend_from_rate(0.0) == "steady"
     assert A.trend_from_rate(0.2) == "rising"
     assert A.trend_from_rate(-0.2) == "falling"
+    assert A.trend_from_rate(0.011) == "rising"
+    assert A.trend_from_rate(-0.015) == "steady"  # falls need a larger change
 
 
 def test_no_projection_for_negligible_rate():

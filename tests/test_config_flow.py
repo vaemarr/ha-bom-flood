@@ -1,7 +1,6 @@
 """Config and options flows."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 
 import pytest
 from homeassistant import config_entries

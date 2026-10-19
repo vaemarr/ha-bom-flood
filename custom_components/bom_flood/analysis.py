@@ -13,7 +13,8 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from statistics import median
-from typing import Any, Iterable
+from typing import Any
+from collections.abc import Iterable
 
 from .const import (
     DATUM_SHIFT_SAMPLES,
@@ -39,6 +40,7 @@ from .const import (
     TREND_FALLING,
     TREND_RISING,
     TREND_STEADY,
+    TREND_FALLING_THRESHOLD_M_PER_H,
     TREND_THRESHOLD_M_PER_H,
 )
 
@@ -291,7 +293,7 @@ def trend_from_rate(rate: float | None) -> str | None:
         return None
     if rate > TREND_THRESHOLD_M_PER_H:
         return TREND_RISING
-    if rate < -TREND_THRESHOLD_M_PER_H:
+    if rate < -TREND_FALLING_THRESHOLD_M_PER_H:
         return TREND_FALLING
     return TREND_STEADY
 
@@ -472,7 +474,7 @@ class GaugeTracker:
             return None
         gaps = [
             _hours(a.observed_at, b.observed_at)
-            for a, b in zip(self.history, self.history[1:])
+            for a, b in zip(self.history, self.history[1:], strict=False)
         ]
         return median(gaps)
 

@@ -334,6 +334,7 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
         self._failures = 0
         self._logged_missing: set[str] = set()
         self._logged_stale: set[str] = set()
+        self._logged_unit: set[str] = set()
         self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}")
         self._last_rain: dict[str, A.HcsRecord] = {}
         self._last_quality: dict[str, int | None] = {}
@@ -559,10 +560,25 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
             self._datum_changed.add(station_id)
         tracker.datum = datum
 
+    def _unit_ok(self, station_id: str, record: A.HcsRecord) -> bool:
+        """Water levels must be in metres; anything else is skipped, not converted."""
+        if record.unit in ("metres", "m", ""):
+            return True
+        if station_id not in self._logged_unit:
+            _LOGGER.warning(
+                "BOM reported %s in unexpected unit %r; ignoring those readings",
+                station_id, record.unit,
+            )
+            self._logged_unit.add(station_id)
+        return False
+
     def _ingest_dense(self, dense: A.HcsFile) -> None:
         """Merge the hourly multi-reading file into each gauge's history."""
         for station_id in self._station_ids:
-            records = [r for r in dense.records.get(station_id, []) if r.value is not None]
+            records = [
+                r for r in dense.records.get(station_id, [])
+                if r.value is not None and self._unit_ok(station_id, r)
+            ]
             if not records:
                 continue
             tracker = self._tracker(station_id)
@@ -581,7 +597,7 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
             if record is None:
                 continue
             self._last_quality[station_id] = record.quality
-            if record.value is None:
+            if record.value is None or not self._unit_ok(station_id, record):
                 continue
             tracker = self._tracker(station_id)
             self._check_datum(station_id, tracker, record.datum)
@@ -603,6 +619,33 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                     "level; accepting this as a genuine change of level",
                     station_id, len(tracker.history), record.value,
                 )
+
+    def diagnostics(self, now: datetime) -> dict[str, Any]:
+        """Internal state for the diagnostics download."""
+        return {
+            "now": now.isoformat(),
+            "last_success": self._last_success.isoformat() if self._last_success else None,
+            "consecutive_failures": self._failures,
+            "dense_feed": self._dense.last_name,
+            "thresholds_checked_at": (
+                self._thresholds.checked_at.isoformat() if self._thresholds.checked_at else None
+            ),
+            "datum_changed": sorted(self._datum_changed),
+            "gauges": {
+                station_id: {
+                    "history": [[o.observed_at.isoformat(), o.level] for o in t.history],
+                    "pending_rejections": [[o.observed_at.isoformat(), o.level] for o in t.pending],
+                    "datum": t.datum,
+                    "cadence_h": t.cadence_hours(),
+                    "stale_after_h": t.stale_after_hours(),
+                    "rate": vars(r) if (r := t.rate()) else None,
+                    "level_shift_at": t.level_shift_at.isoformat() if t.level_shift_at else None,
+                    "meta": m.to_dict() | {"source": m.thresholds_source} if (m := self.station_meta(station_id)) else None,
+                    "bom_map": self._thresholds.bom_status.get(station_id),
+                }
+                for station_id, t in self._trackers.items()
+            },
+        }
 
     # -- output ------------------------------------------------------------
 
