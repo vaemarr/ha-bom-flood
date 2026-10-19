@@ -1,12 +1,17 @@
+"""Fetches BOM data and turns it into per-gauge readings.
+
+The decisions about what a reading means — screening, rates, status — live in
+analysis.py. This module handles I/O: FTP with retries, the hourly side feeds,
+persistence, and what to show when BOM cannot be reached.
+"""
 from __future__ import annotations
 
 import asyncio
-import csv
 import ftplib
 import io
 import logging
-import re
-from dataclasses import dataclass, replace
+import time
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -16,59 +21,41 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
+from . import analysis as A
 from .const import (
     CONF_CUSTOM_THRESHOLDS,
+    DATUM_AGREEMENT_M,
+    CONF_REGION,
     CONF_SCAN_INTERVAL,
     CONF_STATION_META,
     CONF_STATIONS,
-    DATUM_SHIFT_SAMPLES,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
-    MAX_PLAUSIBLE_RATE_M_PER_H,
-    MAX_RATE_AGE_HOURS,
-    RATE_HISTORY_HOURS,
-    RATE_WINDOW_MAX_HOURS,
-    RATE_WINDOW_MIN_HOURS,
-    STALE_CADENCE_MULTIPLIER,
-    STALE_FALLBACK_HOURS,
-    STALE_MIN_HOURS,
-    STORAGE_SAVE_DELAY,
-    STORAGE_VERSION,
+    FETCH_ATTEMPTS,
+    FETCH_RETRY_DELAYS_S,
     FTP_HOST,
     FTP_PATH,
-    FLOOD_STATUS_BELOW,
-    FLOOD_STATUS_MAJOR,
-    FLOOD_STATUS_MINOR,
-    FLOOD_STATUS_MODERATE,
-    FLOOD_STATUS_NO_CLASSIFICATION,
+    FTP_TIMEOUT_S,
     HCS_RAINFALL_HOURLY_PREFIX,
+    HCS_WATER_LEVEL_DENSE_PREFIX,
     HCS_WATER_LEVEL_PREFIX,
+    KEEP_SERVING_HOURS,
+    LEVEL_KEYS,
+    MAP_REFRESH_HOURS,
+    STORAGE_SAVE_DELAY,
+    STORAGE_VERSION,
     THRESHOLD_KEYS,
     THRESHOLDS_SOURCE_BOM,
     THRESHOLDS_SOURCE_USER,
-    TREND_FALLING,
-    TREND_RISING,
-    TREND_STEADY,
-    TREND_THRESHOLD_M,
+    UPDATE_TIMEOUT_S,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-# BOM HTML encodes station name with &quot; and remaining fields with single quotes:
-# PopupRiver("Name",'id','lat','lon','level','status','trend','timestamp','minor','mod','major',...)
-_POPUP_RE = re.compile(
-    r'PopupRiver\("(?P<name>[^"]+)"'
-    r",\'(?P<station_id>[^\']*)\'"
-    r",\'(?P<lat>[^\']*)\'"
-    r",\'(?P<lon>[^\']*)\'"
-    r",\'(?P<level>[^\']*)\'"
-    r",\'(?P<status>[^\']*)\'"
-    r",\'(?P<trend>[^\']*)\'"
-    r",\'(?P<timestamp>[^\']*)\'"
-    r",\'(?P<minor_m>[^\']*)\'"
-    r",\'(?P<moderate_m>[^\']*)\'"
-    r",\'(?P<major_m>[^\']*)\'"
-)
+
+# ---------------------------------------------------------------------------
+# Station metadata
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -97,13 +84,28 @@ class StationMeta:
     def from_dict(cls, d: dict[str, Any]) -> StationMeta:
         return cls(
             station_id=d["station_id"],
-            name=d["name"],
-            lat=d["lat"],
-            lon=d["lon"],
+            name=d.get("name") or d["station_id"],
+            lat=d.get("lat", 0.0),
+            lon=d.get("lon", 0.0),
             minor_m=d.get("minor_m"),
             moderate_m=d.get("moderate_m"),
             major_m=d.get("major_m"),
         )
+
+    @classmethod
+    def from_map(cls, m: A.MapStation) -> StationMeta:
+        return cls(
+            station_id=m.station_id,
+            name=m.name,
+            lat=m.lat,
+            lon=m.lon,
+            minor_m=m.minor_m,
+            moderate_m=m.moderate_m,
+            major_m=m.major_m,
+        )
+
+    def thresholds(self) -> dict[str, float | None]:
+        return {"minor": self.minor_m, "moderate": self.moderate_m, "major": self.major_m}
 
 
 def get_custom_thresholds(entry: ConfigEntry) -> dict[str, dict[str, float]]:
@@ -113,546 +115,562 @@ def get_custom_thresholds(entry: ConfigEntry) -> dict[str, dict[str, float]]:
     )
 
 
-def build_station_meta(entry: ConfigEntry) -> dict[str, StationMeta]:
-    """Station metadata with any user-supplied thresholds applied.
+def apply_overrides(
+    meta: StationMeta, override: dict[str, float] | None
+) -> StationMeta:
+    """User levels win over BOM's, per level, so a partial override keeps the rest."""
+    applied = {
+        key: override[key]
+        for key in THRESHOLD_KEYS
+        if override and override.get(key) is not None
+    }
+    if applied:
+        return replace(meta, thresholds_source=THRESHOLDS_SOURCE_USER, **applied)
+    return replace(meta, thresholds_source=THRESHOLDS_SOURCE_BOM)
 
-    BOM leaves the flood thresholds empty for gauges it does not classify (ALERT
-    stations, mostly), which makes a status impossible to derive. A user who knows
-    local levels can supply their own; those win over BOM per-level, so a partial
-    override still keeps whatever BOM does publish.
-    """
+
+def build_station_meta(entry: ConfigEntry) -> dict[str, StationMeta]:
+    """Station metadata as stored at setup, with user thresholds applied."""
     overrides = get_custom_thresholds(entry)
     metas: dict[str, StationMeta] = {}
     for station_id, stored in entry.data.get(CONF_STATION_META, {}).items():
-        meta = StationMeta.from_dict(stored)
-        override = overrides.get(station_id) or {}
-        applied = {
-            key: override[key]
-            for key in THRESHOLD_KEYS
-            if override.get(key) is not None
-        }
-        if applied:
-            meta = replace(meta, thresholds_source=THRESHOLDS_SOURCE_USER, **applied)
-        else:
-            meta = replace(meta, thresholds_source=THRESHOLDS_SOURCE_BOM)
-        metas[station_id] = meta
+        if not stored:
+            continue
+        metas[station_id] = apply_overrides(
+            StationMeta.from_dict({"station_id": station_id, **stored}),
+            overrides.get(station_id),
+        )
     return metas
+
+
+# ---------------------------------------------------------------------------
+# Readings
+# ---------------------------------------------------------------------------
 
 
 @dataclass
 class StationReading:
+    """Everything the entities show for one gauge, as of one poll."""
+
     station_id: str
+    name: str
     level: float | None
-    timestamp: str
-    quality: int
-    trend: str
+    observed_at: datetime | None
+    datum: str | None
+    quality: int | None
     flood_status: str | None
-    rate_of_rise_m_per_hr: float | None
-    rainfall_mm_1h: float | None
-    rate_calculated_at: str | None = None
-    reading_age_min: float | None = None
-    stale_after_min: float | None = None
-    stale: bool = False
+    rate_m_per_h: float | None
+    rate_window_h: float | None
+    stale_after_min: float
+    thresholds: dict[str, float | None]
+    thresholds_source: str
+    thresholds_checked_at: datetime | None
+    lat: float | None = None
+    lon: float | None = None
     rejected_reading: float | None = None
+    level_shift_at: datetime | None = None
+    rainfall_mm: float | None = None
+    rainfall_observed_at: datetime | None = None
+    bom_status: str | None = None
+    bom_trend: str | None = None
+    feed_ok: bool = True
+
+    # Time-dependent values are derived on read, so a reading displayed long
+    # after it was fetched (a hung or failing feed) still ages honestly.
+
+    def age_minutes(self, now: datetime) -> float | None:
+        if self.observed_at is None:
+            return None
+        return round((now - self.observed_at).total_seconds() / 60, 1)
+
+    def is_stale(self, now: datetime) -> bool:
+        age = self.age_minutes(now)
+        return age is None or age > self.stale_after_min
+
+    def rate(self, now: datetime) -> float | None:
+        """The rate, unless the reading is too old to say what the river is doing."""
+        if self.is_stale(now):
+            return None
+        return self.rate_m_per_h
+
+    def trend(self, now: datetime) -> str | None:
+        return A.trend_from_rate(self.rate(now))
+
+    def hours_to(self, now: datetime) -> dict[str, float | None]:
+        rate = self.rate(now)
+        return {
+            name: A.hours_to_level(self.level, rate, self.thresholds.get(name))
+            for name in LEVEL_KEYS
+        }
+
+    def next_level(self, now: datetime) -> tuple[str | None, float | None]:
+        """The lowest flood level not yet reached, and hours to it if rising."""
+        if self.level is None:
+            return None, None
+        hours = self.hours_to(now)
+        for name in LEVEL_KEYS:
+            threshold = self.thresholds.get(name)
+            if threshold is not None and self.level < threshold:
+                return name, hours[name]
+        return None, None
+
+
+# ---------------------------------------------------------------------------
+# FTP
+# ---------------------------------------------------------------------------
+
+
+def _with_retries(func, *args):
+    """Call a blocking FTP function, retrying transient failures."""
+    last_exc: Exception | None = None
+    for attempt in range(FETCH_ATTEMPTS):
+        try:
+            return func(*args)
+        except (OSError, EOFError, ftplib.Error, A.HcsFormatError) as exc:
+            last_exc = exc
+            if attempt < FETCH_ATTEMPTS - 1:
+                time.sleep(FETCH_RETRY_DELAYS_S[min(attempt, len(FETCH_RETRY_DELAYS_S) - 1)])
+    assert last_exc is not None
+    raise last_exc
 
 
 def _ftp_connect() -> ftplib.FTP:
-    ftp = ftplib.FTP(FTP_HOST, timeout=30)
+    ftp = ftplib.FTP(FTP_HOST, timeout=FTP_TIMEOUT_S)
     ftp.login()
+    ftp.cwd(FTP_PATH)
     return ftp
 
 
-def _fetch_latest_hcs_file(prefix: str) -> str:
-    """List BOM FTP, download the newest file matching prefix_*.hcs, return contents."""
+def _download(ftp: ftplib.FTP, filename: str) -> str:
+    buf = io.BytesIO()
+    ftp.retrbinary(f"RETR {filename}", buf.write)
+    return buf.getvalue().decode("utf-8", errors="replace")
+
+
+def _latest_name(prefix: str) -> str:
     ftp = _ftp_connect()
     try:
-        ftp.cwd(FTP_PATH)
-        filenames = ftp.nlst(f"{prefix}_*.hcs")
-        if not filenames:
-            raise UpdateFailed(f"No {prefix} HCS files found on BOM FTP")
-        latest = sorted(filenames)[-1]
-        _LOGGER.debug("Fetching HCS file: %s", latest)
-        buf = io.BytesIO()
-        ftp.retrbinary(f"RETR {latest}", buf.write)
-        return buf.getvalue().decode("utf-8", errors="replace")
+        names = ftp.nlst(f"{prefix}_*.hcs")
     finally:
-        try:
-            ftp.quit()
-        except Exception:
-            pass
+        _quit(ftp)
+    if not names:
+        raise ftplib.error_perm(f"No {prefix} files on BOM FTP")
+    return sorted(names)[-1]
 
 
-def _fetch_latest_hcs() -> str:
-    return _fetch_latest_hcs_file(HCS_WATER_LEVEL_PREFIX)
-
-
-def _fetch_latest_rainfall_hcs() -> str:
-    return _fetch_latest_hcs_file(HCS_RAINFALL_HOURLY_PREFIX)
+def _fetch_named(filename: str, sensor_type: str) -> A.HcsFile:
+    ftp = _ftp_connect()
+    try:
+        content = _download(ftp, filename)
+    finally:
+        _quit(ftp)
+    return A.parse_hcs(content, sensor_type)
 
 
 def _fetch_html_map(product_code: str) -> str:
-    """Download the BOM HTML flood map for station discovery."""
+    """Download a BOM regional flood map page."""
     ftp = _ftp_connect()
     try:
-        ftp.cwd(FTP_PATH)
-        buf = io.BytesIO()
-        ftp.retrbinary(f"RETR {product_code}.html", buf.write)
-        return buf.getvalue().decode("utf-8", errors="replace")
+        return _download(ftp, f"{product_code}.html")
     finally:
-        try:
-            ftp.quit()
-        except Exception:
-            pass
+        _quit(ftp)
 
 
-def _safe_float(value: str) -> float | None:
+def fetch_region_map(product_code: str) -> list[A.MapStation]:
+    return A.parse_region_map(_with_retries(_fetch_html_map, product_code))
+
+
+def _quit(ftp: ftplib.FTP) -> None:
     try:
-        return float(value.strip())
-    except (ValueError, AttributeError):
-        return None
+        ftp.quit()
+    except Exception:  # noqa: BLE001 - closing a dead connection is not an error
+        ftp.close()
 
 
-def _parse_stations_from_html(html: str) -> list[StationMeta]:
-    """Extract station metadata from PopupRiver() calls in BOM HTML map."""
-    html = html.replace("&quot;", '"')
-    stations: list[StationMeta] = []
-    for match in _POPUP_RE.finditer(html):
-        g = match.groupdict()
-        lat = _safe_float(g["lat"])
-        lon = _safe_float(g["lon"])
-        if lat is None or lon is None or not g["station_id"]:
-            continue
-        stations.append(StationMeta(
-            station_id=g["station_id"],
-            name=g["name"],
-            lat=lat,
-            lon=lon,
-            minor_m=_safe_float(g["minor_m"]),
-            moderate_m=_safe_float(g["moderate_m"]),
-            major_m=_safe_float(g["major_m"]),
-        ))
-    return stations
+# ---------------------------------------------------------------------------
+# Coordinator
+# ---------------------------------------------------------------------------
 
 
-def _parse_hcs(content: str, sensor_type: str) -> dict[str, tuple[float | None, str, int]]:
-    """Parse HCS CSV → dict[station_id, (value, timestamp, quality)] for given sensor type."""
-    result: dict[str, tuple[float | None, str, int]] = {}
-    reader = csv.reader(
-        (line for line in content.splitlines() if not line.startswith("#")),
-        quotechar='"',
-    )
-    for row in reader:
-        if len(row) < 10:
-            continue
-        if row[1].strip().strip('"') != sensor_type:
-            continue
-        station_id = row[4].strip().strip('"')
-        timestamp = row[5].strip().strip('"')
-        value = _safe_float(row[6])
-        try:
-            quality = int(row[10].strip().strip('"'))
-        except (ValueError, IndexError):
-            quality = 0
-        result[station_id] = (value, timestamp, quality)
-    return result
+@dataclass
+class _FeedState:
+    last_name: str | None = None
+    fetched_at: datetime | None = None
 
 
-def _derive_flood_status(level: float | None, meta: StationMeta | None) -> str | None:
-    """Classify a level against BOM's thresholds.
-
-    None (state 'unknown') means we cannot classify: no reading, or no stored
-    metadata. NO_CLASSIFICATION means we can, and BOM sets no thresholds here.
-    """
-    if level is None or meta is None:
-        return None
-    if meta.major_m is not None and level >= meta.major_m:
-        return FLOOD_STATUS_MAJOR
-    if meta.moderate_m is not None and level >= meta.moderate_m:
-        return FLOOD_STATUS_MODERATE
-    if meta.minor_m is not None and level >= meta.minor_m:
-        return FLOOD_STATUS_MINOR
-    if meta.minor_m is not None:
-        return FLOOD_STATUS_BELOW
-    return FLOOD_STATUS_NO_CLASSIFICATION
-
-
-def _parse_iso_timestamp(ts: str) -> datetime | None:
-    try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
+@dataclass
+class _ThresholdCache:
+    by_station: dict[str, StationMeta] = field(default_factory=dict)
+    bom_status: dict[str, tuple[str | None, str | None]] = field(default_factory=dict)
+    checked_at: datetime | None = None
 
 
 class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
+    """Polls BOM and keeps per-gauge history across polls and restarts."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        self._station_ids: list[str] = entry.data[CONF_STATIONS]
-        self._station_meta: dict[str, StationMeta] = build_station_meta(entry)
         scan_interval = entry.options.get(
             CONF_SCAN_INTERVAL,
             entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
         )
-        self._history: dict[str, list[tuple[datetime, float]]] = {}
-        self._last_rates: dict[str, float] = {}
-        self._rate_calculated_at: dict[str, datetime] = {}
-        self._logged_missing: set[str] = set()
-        self._logged_stale: set[str] = set()
-        self._rejected_runs: dict[str, int] = {}
-        self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}")
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=DOMAIN,
             update_interval=timedelta(minutes=scan_interval),
         )
+        self._entry = entry
+        self._region: str = entry.data.get(CONF_REGION, "")
+        self._station_ids: list[str] = list(entry.data[CONF_STATIONS])
+        self._setup_meta: dict[str, StationMeta] = build_station_meta(entry)
+        self._overrides = get_custom_thresholds(entry)
+        self._trackers: dict[str, A.GaugeTracker] = {}
+        self._rejected: dict[str, float] = {}
+        self._datum_changed: set[str] = set()
+        self._dense = _FeedState()
+        self._thresholds = _ThresholdCache()
+        self._last_success: datetime | None = None
+        self._failures = 0
+        self._logged_missing: set[str] = set()
+        self._logged_stale: set[str] = set()
+        self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}")
+        self._last_rain: dict[str, A.HcsRecord] = {}
+        self._last_quality: dict[str, int | None] = {}
 
-    def _rate_is_fresh(self, calculated_at: datetime) -> bool:
-        return dt_util.utcnow() - calculated_at <= timedelta(hours=MAX_RATE_AGE_HOURS)
+    @property
+    def station_ids(self) -> list[str]:
+        return list(self._station_ids)
+
+    def reports_rainfall(self, station_id: str) -> bool:
+        """Whether BOM has sent any rainfall for this gauge since startup."""
+        return station_id in self._last_rain
+
+    # -- persistence -------------------------------------------------------
 
     async def async_load_history(self) -> None:
-        """Restore each gauge's recent observations from disk.
+        """Restore per-gauge history and refreshed thresholds from disk.
 
-        Rate of rise is measured across a window of readings. Holding them only
-        in memory meant every restart discarded the baseline and left the sensor
-        unknown until BOM published enough new readings — hours, on gauges that
-        report infrequently. Restoring them lets the first poll after a restart
-        compute a real rate instead.
+        Never fails setup: anything unreadable is dropped and rebuilt from the
+        next BOM files, which carry a few hours of readings anyway.
         """
-        stored = await self._store.async_load()
-        if not stored:
+        try:
+            stored = await self._store.async_load()
+        except Exception:  # noqa: BLE001 - corrupt storage must not block setup
+            _LOGGER.warning("Stored BOM Flood history is unreadable; starting fresh", exc_info=True)
             return
-        for station_id, record in (stored.get("stations") or {}).items():
-            observations = []
-            for timestamp, level in record.get("observations") or []:
-                parsed = _parse_iso_timestamp(timestamp)
-                if parsed is not None and level is not None:
-                    observations.append((parsed, level))
-            if not observations:
-                # Pre-window storage format: a single previous observation.
-                timestamp = _parse_iso_timestamp(record.get("timestamp") or "")
-                level = record.get("level")
-                if timestamp is not None and level is not None:
-                    observations = [(timestamp, level)]
-            # Screen the restored series too. Observations recorded before the
-            # plausibility check existed can still hold a bad sample, and it
-            # would go on poisoning the rate for as long as it sits in the
-            # window — a restart must not reinstate a discredited reading.
-            cleaned: list[tuple[datetime, float]] = []
-            dropped: list[float] = []
-            for observed_at, value in sorted(observations):
-                if cleaned:
-                    previous_at, previous = cleaned[-1]
-                    hours = (observed_at - previous_at).total_seconds() / 3600
-                    if (
-                        hours > 0
-                        and abs(value - previous) / hours > MAX_PLAUSIBLE_RATE_M_PER_H
-                    ):
-                        dropped.append(value)
-                        continue
-                cleaned.append((observed_at, value))
-            if dropped:
-                _LOGGER.warning(
-                    "Discarded %d implausible stored reading(s) for %s: %s",
-                    len(dropped),
-                    station_id,
-                    ", ".join(f"{v:.2f} m" for v in dropped),
-                )
-            if cleaned:
-                self._history[station_id] = cleaned
-            if dropped or "observations" not in record:
-                # Either a pre-window record, whose rate came from
-                # consecutive-sample maths, or a series we just dropped a bad
-                # reading from — in both cases the stored rate was derived from
-                # data we no longer trust. Let the next full window produce one.
-                continue
-            rate = record.get("rate")
-            calculated_at = _parse_iso_timestamp(record.get("rate_calculated_at") or "")
-            if rate is not None and calculated_at is not None and self._rate_is_fresh(calculated_at):
-                self._last_rates[station_id] = rate
-                self._rate_calculated_at[station_id] = calculated_at
-        _LOGGER.debug(
-            "Restored observations for %d gauge(s), %d with a usable rate",
-            len(self._history),
-            len(self._last_rates),
-        )
-
-    def _save_history(self) -> None:
-        def snapshot() -> dict[str, Any]:
-            stations: dict[str, Any] = {}
-            for station_id, observations in self._history.items():
-                calculated_at = self._rate_calculated_at.get(station_id)
-                stations[station_id] = {
-                    "observations": [[ts.isoformat(), level] for ts, level in observations],
-                    "rate": self._last_rates.get(station_id),
-                    "rate_calculated_at": calculated_at.isoformat() if calculated_at else None,
-                }
-            return {"stations": stations}
-
-        self._store.async_delay_save(snapshot, STORAGE_SAVE_DELAY)
-
-    def _record_observation(self, station_id: str, timestamp: datetime, level: float) -> None:
-        """Append a reading and drop anything older than the history window."""
-        observations = self._history.setdefault(station_id, [])
-        if any(existing == timestamp for existing, _ in observations):
+        if not isinstance(stored, dict):
             return
-        observations.append((timestamp, level))
-        observations.sort()
-        cutoff = timestamp - timedelta(hours=RATE_HISTORY_HOURS)
-        self._history[station_id] = [o for o in observations if o[0] >= cutoff]
+        stations = stored.get("stations")
+        if isinstance(stations, dict):
+            for station_id, record in stations.items():
+                if station_id in self._station_ids:
+                    tracker = A.GaugeTracker.from_dict(record)
+                    if tracker.history:
+                        self._trackers[station_id] = tracker
+        thresholds = stored.get("thresholds")
+        checked = A.parse_utc(stored.get("thresholds_checked_at")) if isinstance(
+            stored.get("thresholds_checked_at"), str
+        ) else None
+        if isinstance(thresholds, dict) and checked is not None:
+            for station_id, data in thresholds.items():
+                try:
+                    self._thresholds.by_station[station_id] = StationMeta.from_dict(
+                        {"station_id": station_id, **data}
+                    )
+                except (KeyError, TypeError):
+                    continue
+            self._thresholds.checked_at = checked
+        _LOGGER.debug("Restored history for %d gauge(s)", len(self._trackers))
 
-    def _vet_reading(
-        self, station_id: str, timestamp: datetime, level: float
-    ) -> tuple[datetime, float, float | None]:
-        """Screen a reading for physical plausibility.
+    def _snapshot(self) -> dict[str, Any]:
+        return {
+            "stations": {sid: t.to_dict() for sid, t in self._trackers.items()},
+            "thresholds": {
+                sid: m.to_dict() for sid, m in self._thresholds.by_station.items()
+                if sid in self._station_ids
+            },
+            "thresholds_checked_at": (
+                self._thresholds.checked_at.isoformat() if self._thresholds.checked_at else None
+            ),
+        }
 
-        Returns the (timestamp, level) to use plus the rejected value, if any.
-        A reading implying more than MAX_PLAUSIBLE_RATE_M_PER_H against the last
-        accepted one is not a flood — it is a broken sample — so the last good
-        reading is held instead and the gauge ages towards stale, which is the
-        honest signal that usable data has stopped arriving.
-        """
-        observations = self._history.get(station_id)
-        if not observations:
-            return timestamp, level, None
-        last_ts, last_level = observations[-1]
-        hours = (timestamp - last_ts).total_seconds() / 3600
-        if hours <= 0:
-            return timestamp, level, None
-        if abs(level - last_level) / hours <= MAX_PLAUSIBLE_RATE_M_PER_H:
-            self._rejected_runs.pop(station_id, None)
-            return timestamp, level, None
+    async def async_flush(self) -> None:
+        """Write history now; used on unload so a reload never reads stale data."""
+        await self._store.async_save(self._snapshot())
 
-        run = self._rejected_runs.get(station_id, 0) + 1
-        self._rejected_runs[station_id] = run
-        if run >= DATUM_SHIFT_SAMPLES:
+    # -- metadata ----------------------------------------------------------
+
+    def station_meta(self, station_id: str) -> StationMeta | None:
+        """Current metadata: latest BOM map values, then user overrides on top."""
+        base = self._thresholds.by_station.get(station_id) or self._setup_meta.get(station_id)
+        if base is None:
+            return None
+        return apply_overrides(base, self._overrides.get(station_id))
+
+    def _map_due(self, now: datetime) -> bool:
+        if self._datum_changed:
+            return True
+        checked = self._thresholds.checked_at
+        return checked is None or now - checked >= timedelta(hours=MAP_REFRESH_HOURS)
+
+    async def _refresh_map(self, now: datetime) -> None:
+        """Pick up revised flood levels and BOM's own status for cross-checking."""
+        if not self._region:
+            return
+        try:
+            stations = await self.hass.async_add_executor_job(fetch_region_map, self._region)
+        except Exception as exc:  # noqa: BLE001 - map is supplementary
+            _LOGGER.debug("Could not refresh BOM map %s: %s", self._region, exc)
+            return
+        if not stations:
             _LOGGER.warning(
-                "%s has reported %d consecutive readings near %.2f m, far from the "
-                "previous %.2f m; treating this as a datum change and accepting it",
-                station_id,
-                run,
-                level,
-                last_level,
+                "BOM map %s returned no gauges; keeping the flood levels already held",
+                self._region,
             )
-            self._history[station_id] = []
-            self._rejected_runs.pop(station_id, None)
-            return timestamp, level, None
+            return
+        by_id = {s.station_id: s for s in stations}
+        for station_id in self._station_ids:
+            m = by_id.get(station_id)
+            if m is None:
+                continue
+            new = StationMeta.from_map(m)
+            old = self._thresholds.by_station.get(station_id) or self._setup_meta.get(station_id)
+            if old is not None and old.thresholds() != new.thresholds():
+                _LOGGER.warning(
+                    "BOM changed the flood levels for %s: %s -> %s",
+                    m.name, old.thresholds(), new.thresholds(),
+                )
+            self._thresholds.by_station[station_id] = new
+            self._thresholds.bom_status[station_id] = (m.bom_status, m.bom_trend)
+            if station_id in self._datum_changed and self._map_agrees(station_id, m):
+                self._datum_changed.discard(station_id)
+        self._thresholds.checked_at = now
 
-        _LOGGER.warning(
-            "Ignoring implausible reading for %s: %.2f m at %s implies %.0f m/h "
-            "against the previous %.2f m. Holding the last good reading.",
-            station_id,
-            level,
-            timestamp.isoformat(),
-            abs(level - last_level) / hours,
-            last_level,
-        )
-        return last_ts, last_level, level
+    def _map_agrees(self, station_id: str, m: A.MapStation) -> bool:
+        """BOM's map shows this gauge on the same datum as the feed.
 
-    def _typical_cadence_hours(self, station_id: str) -> float | None:
-        """Median gap between this gauge's observations, or None if too few."""
-        observations = self._history.get(station_id, [])
-        if len(observations) < 3:
-            return None
-        gaps = sorted(
-            (later[0] - earlier[0]).total_seconds() / 3600
-            for earlier, later in zip(observations, observations[1:])
-        )
-        middle = len(gaps) // 2
-        if len(gaps) % 2:
-            return gaps[middle]
-        return (gaps[middle - 1] + gaps[middle]) / 2
-
-    def _staleness(
-        self, station_id: str, timestamp: datetime | None
-    ) -> tuple[float | None, float | None, bool]:
-        """(age of reading, threshold, stale) in minutes.
-
-        Judged against the gauge's own cadence: three missed reports marks it
-        stale, floored so a fast-reporting gauge is not flagged for one late
-        reading, and falling back to a fixed window until enough observations
-        exist to know the cadence.
+        After a datum change the flood levels are only trusted again once the
+        map's displayed level matches ours, i.e. the map's thresholds are on
+        the datum the readings now use.
         """
-        if timestamp is None:
-            return None, None, False
-        age_hours = (dt_util.utcnow() - timestamp).total_seconds() / 3600
-        cadence = self._typical_cadence_hours(station_id)
-        if cadence is None:
-            limit_hours = STALE_FALLBACK_HOURS
-        else:
-            limit_hours = max(STALE_MIN_HOURS, STALE_CADENCE_MULTIPLIER * cadence)
+        tracker = self._trackers.get(station_id)
+        latest = tracker.latest if tracker else None
         return (
-            round(age_hours * 60, 1),
-            round(limit_hours * 60, 1),
-            age_hours > limit_hours,
+            latest is not None
+            and m.bom_level is not None
+            and abs(latest.level - m.bom_level) <= DATUM_AGREEMENT_M
         )
 
-    def _windowed_rate(
-        self, station_id: str, timestamp: datetime, level: float
-    ) -> float | None:
-        """Rate of rise in m/hr measured against the oldest reading in the window.
-
-        Returns None until a reading at least RATE_WINDOW_MIN_HOURS old exists,
-        which is deliberate: a rate derived from two readings minutes apart is
-        dominated by gauge noise, and this figure drives flood projections.
-        """
-        candidates = [
-            (ts, lvl)
-            for ts, lvl in self._history.get(station_id, [])
-            if timedelta(hours=RATE_WINDOW_MIN_HOURS)
-            <= timestamp - ts
-            <= timedelta(hours=RATE_WINDOW_MAX_HOURS)
-        ]
-        if not candidates:
-            return None
-        baseline_ts, baseline_level = min(candidates)
-        hours = (timestamp - baseline_ts).total_seconds() / 3600
-        if hours <= 0:
-            return None
-        return round((level - baseline_level) / hours, 3)
-
-    def _cached_rate(self, station_id: str) -> float | None:
-        """Last computed rate, unless it has aged out."""
-        calculated_at = self._rate_calculated_at.get(station_id)
-        if calculated_at is None or not self._rate_is_fresh(calculated_at):
-            self._last_rates.pop(station_id, None)
-            self._rate_calculated_at.pop(station_id, None)
-            return None
-        return self._last_rates.get(station_id)
+    # -- update ------------------------------------------------------------
 
     async def _async_update_data(self) -> dict[str, StationReading]:
-        # Fetch water level and hourly rainfall HCS files in parallel
+        now = dt_util.utcnow()
         try:
-            wl_content, rain_content = await asyncio.gather(
-                self.hass.async_add_executor_job(_fetch_latest_hcs),
-                self.hass.async_add_executor_job(_fetch_latest_rainfall_hcs),
-                return_exceptions=True,
+            async with asyncio.timeout(UPDATE_TIMEOUT_S):
+                wl, rain, dense = await self._fetch_feeds(now)
+        except Exception as exc:  # noqa: BLE001 - every failure takes the same path
+            return self._handle_failure(now, exc)
+
+        if self._failures:
+            _LOGGER.info("BOM water level feed is reachable again")
+        self._failures = 0
+        self._last_success = now
+
+        if dense is not None:
+            self._ingest_dense(dense)
+        self._ingest_latest(wl)
+        if rain is not None:
+            for station_id in self._station_ids:
+                record = rain.latest(station_id)
+                if record is not None:
+                    self._last_rain[station_id] = record
+
+        if self._map_due(now):
+            await self._refresh_map(now)
+
+        readings = self._build_readings(now, feed_ok=True)
+        self._log_gaps(now, readings)
+        self._store.async_delay_save(self._snapshot, STORAGE_SAVE_DELAY)
+        return readings
+
+    async def _fetch_feeds(
+        self, now: datetime
+    ) -> tuple[A.HcsFile, A.HcsFile | None, A.HcsFile | None]:
+        run = self.hass.async_add_executor_job
+        wl_name = await run(_with_retries, _latest_name, HCS_WATER_LEVEL_PREFIX)
+        wl_task = run(_with_retries, _fetch_named, wl_name, "WL")
+        rain_task = run(self._fetch_optional, HCS_RAINFALL_HOURLY_PREFIX, "RN", None)
+        dense_task = run(
+            self._fetch_optional, HCS_WATER_LEVEL_DENSE_PREFIX, "WL", self._dense.last_name
+        )
+        wl, rain_result, dense_result = await asyncio.gather(wl_task, rain_task, dense_task)
+        rain = rain_result[1] if rain_result else None
+        dense = None
+        if dense_result:
+            self._dense.last_name, dense = dense_result
+            self._dense.fetched_at = now
+        return wl, rain, dense
+
+    @staticmethod
+    def _fetch_optional(
+        prefix: str, sensor_type: str, skip_if_name: str | None
+    ) -> tuple[str, A.HcsFile] | None:
+        """Fetch a supplementary feed; None if unchanged or unavailable."""
+        try:
+            name = _with_retries(_latest_name, prefix)
+            if name == skip_if_name:
+                return None
+            return name, _with_retries(_fetch_named, name, sensor_type)
+        except Exception as exc:  # noqa: BLE001 - supplementary feeds are optional
+            _LOGGER.debug("Optional feed %s unavailable: %s", prefix, exc)
+            return None
+
+    def _handle_failure(self, now: datetime, exc: Exception) -> dict[str, StationReading]:
+        """Keep showing the last readings for a while, ageing visibly.
+
+        Making every entity unavailable on the first FTP hiccup hides levels the
+        user still needs and breaks state-based automations. The readings keep
+        their BOM timestamps, so age and staleness grow honestly; only after
+        KEEP_SERVING_HOURS without BOM do the entities go unavailable.
+        """
+        self._failures += 1
+        if self._failures == 1:
+            _LOGGER.warning("BOM water level feed unavailable: %s", exc)
+        if self.data and self._last_success and now - self._last_success < timedelta(hours=KEEP_SERVING_HOURS):
+            return self._build_readings(now, feed_ok=False)
+        raise UpdateFailed(f"BOM water level feed unavailable: {exc}") from exc
+
+    # -- ingestion ---------------------------------------------------------
+
+    def _tracker(self, station_id: str) -> A.GaugeTracker:
+        return self._trackers.setdefault(station_id, A.GaugeTracker())
+
+    def _check_datum(self, station_id: str, tracker: A.GaugeTracker, datum: str) -> None:
+        if not datum:
+            return
+        if tracker.datum and tracker.datum != datum:
+            _LOGGER.warning(
+                "%s changed datum from %s to %s; restarting its history and "
+                "re-checking flood levels before classifying it again",
+                station_id, tracker.datum, datum,
             )
-        except Exception as exc:
-            raise UpdateFailed(f"BOM FTP error: {exc}") from exc
+            tracker.reset()
+            self._datum_changed.add(station_id)
+        tracker.datum = datum
 
-        if isinstance(wl_content, Exception):
-            raise UpdateFailed(f"Water level fetch failed: {wl_content}")
-
-        if isinstance(rain_content, Exception):
-            _LOGGER.warning("Rainfall fetch failed (non-critical): %s", rain_content)
-            rain_content = ""
-
-        try:
-            wl_data = _parse_hcs(wl_content, "WL")
-        except Exception as exc:
-            raise UpdateFailed(f"HCS parse error: {exc}") from exc
-
-        rain_data = {}
-        if rain_content:
-            try:
-                rain_data = _parse_hcs(rain_content, "RN")
-            except Exception:
-                _LOGGER.warning("Rainfall HCS parse failed", exc_info=True)
-
-        readings: dict[str, StationReading] = {}
-        missing: list[str] = []
+    def _ingest_dense(self, dense: A.HcsFile) -> None:
+        """Merge the hourly multi-reading file into each gauge's history."""
         for station_id in self._station_ids:
-            if station_id not in wl_data:
-                missing.append(station_id)
+            records = [r for r in dense.records.get(station_id, []) if r.value is not None]
+            if not records:
                 continue
+            tracker = self._tracker(station_id)
+            self._check_datum(station_id, tracker, records[-1].datum)
+            observations = [A.Observation(r.observed_at, r.value) for r in records]
+            if not tracker.history:
+                # Robust seed: choose the baseline that keeps the most readings.
+                tracker.history = A.screen_series(observations)
+                continue
+            for obs in observations:
+                tracker.ingest(obs)
 
-            level, timestamp, quality = wl_data[station_id]
-            meta = self._station_meta.get(station_id)
-            curr_ts = _parse_iso_timestamp(timestamp)
-
-            # Screen out physically impossible readings before they reach the
-            # level, the rate, the projections or the flood status.
-            rejected: float | None = None
-            if level is not None and curr_ts is not None:
-                curr_ts, level, rejected = self._vet_reading(station_id, curr_ts, level)
-                timestamp = curr_ts.isoformat().replace("+00:00", "Z")
-
-            # Rate of rise (m/hr) measured across a window of BOM observations,
-            # not between consecutive ones — see RATE_WINDOW_MIN_HOURS.
-            rate_of_rise: float | None = None
-            if level is not None and curr_ts is not None:
-                windowed = self._windowed_rate(station_id, curr_ts, level)
-                self._record_observation(station_id, curr_ts, level)
-                if windowed is not None:
-                    rate_of_rise = windowed
-                    self._last_rates[station_id] = windowed
-                    self._rate_calculated_at[station_id] = curr_ts
-                else:
-                    # Not enough spread yet, or BOM has not published a new
-                    # reading — keep the rate the last full window produced.
-                    rate_of_rise = self._cached_rate(station_id)
-            elif level is not None:
-                rate_of_rise = self._cached_rate(station_id)
+    def _ingest_latest(self, wl: A.HcsFile) -> None:
+        for station_id in self._station_ids:
+            record = wl.latest(station_id)
+            if record is None:
+                continue
+            self._last_quality[station_id] = record.quality
+            if record.value is None:
+                continue
+            tracker = self._tracker(station_id)
+            self._check_datum(station_id, tracker, record.datum)
+            result = tracker.ingest(A.Observation(record.observed_at, record.value))
+            if result.rejected_level is not None:
+                if self._rejected.get(station_id) != result.rejected_level:
+                    _LOGGER.warning(
+                        "Ignoring implausible reading for %s: %.2f m at %s against %.2f m. "
+                        "Holding the last good reading.",
+                        station_id, result.rejected_level, record.observed_at.isoformat(),
+                        tracker.latest.level if tracker.latest else float("nan"),
+                    )
+                self._rejected[station_id] = result.rejected_level
             else:
-                self._last_rates.pop(station_id, None)
-                self._rate_calculated_at.pop(station_id, None)
+                self._rejected.pop(station_id, None)
+            if result.level_shift:
+                _LOGGER.warning(
+                    "%s reported %d consistent readings near %.2f m, far from its previous "
+                    "level; accepting this as a genuine change of level",
+                    station_id, len(tracker.history), record.value,
+                )
 
-            # Trend follows the same windowed rate, so a single bad reading
-            # cannot flip a falling gauge to "rising".
-            if rate_of_rise is None:
-                trend = TREND_STEADY
-            elif rate_of_rise > TREND_THRESHOLD_M:
-                trend = TREND_RISING
-            elif rate_of_rise < -TREND_THRESHOLD_M:
-                trend = TREND_FALLING
-            else:
-                trend = TREND_STEADY
+    # -- output ------------------------------------------------------------
 
-            flood_status = _derive_flood_status(level, meta)
-
-            age_min, stale_after_min, is_stale = self._staleness(station_id, curr_ts)
-
-            rainfall: float | None = None
-            if station_id in rain_data:
-                rainfall = rain_data[station_id][0]
-
+    def _build_readings(self, now: datetime, *, feed_ok: bool) -> dict[str, StationReading]:
+        readings: dict[str, StationReading] = {}
+        for station_id in self._station_ids:
+            tracker = self._trackers.get(station_id)
+            latest = tracker.latest if tracker else None
+            if tracker is None or latest is None:
+                continue
+            meta = self.station_meta(station_id)
+            thresholds = meta.thresholds() if meta else {"minor": None, "moderate": None, "major": None}
+            rate = tracker.rate()
+            status = A.derive_flood_status(
+                latest.level, thresholds["minor"], thresholds["moderate"], thresholds["major"]
+            )
+            if station_id in self._datum_changed or meta is None:
+                status = None
+            rain = A.fresh_rainfall(self._last_rain.get(station_id), now)
+            bom_status, bom_trend = self._thresholds.bom_status.get(station_id, (None, None))
             readings[station_id] = StationReading(
                 station_id=station_id,
-                level=level,
-                timestamp=timestamp,
-                quality=quality,
-                trend=trend,
-                flood_status=flood_status,
-                rate_of_rise_m_per_hr=rate_of_rise,
-                rainfall_mm_1h=rainfall,
-                rate_calculated_at=(
-                    calculated_at.isoformat()
-                    if (calculated_at := self._rate_calculated_at.get(station_id))
-                    else None
-                ),
-                reading_age_min=age_min,
-                stale_after_min=stale_after_min,
-                stale=is_stale,
-                rejected_reading=rejected,
+                name=meta.name if meta else station_id,
+                level=latest.level,
+                observed_at=latest.observed_at,
+                datum=tracker.datum,
+                quality=self._last_quality.get(station_id),
+                flood_status=status,
+                rate_m_per_h=rate.rate_m_per_h if rate else None,
+                rate_window_h=rate.window_hours if rate else None,
+                stale_after_min=round(tracker.stale_after_hours() * 60, 1),
+                thresholds=thresholds,
+                thresholds_source=meta.thresholds_source if meta else THRESHOLDS_SOURCE_BOM,
+                thresholds_checked_at=self._thresholds.checked_at,
+                lat=meta.lat if meta else None,
+                lon=meta.lon if meta else None,
+                rejected_reading=self._rejected.get(station_id),
+                level_shift_at=tracker.level_shift_at,
+                rainfall_mm=rain.value if rain else None,
+                rainfall_observed_at=rain.observed_at if rain else None,
+                bom_status=bom_status,
+                bom_trend=bom_trend,
+                feed_ok=feed_ok,
             )
-            if is_stale and station_id not in self._logged_stale:
-                _LOGGER.warning(
-                    "BOM has not published a new reading for %s in %.0f minutes; "
-                    "the level shown is that old reading, not a current one",
-                    meta.name if meta else station_id,
-                    age_min or 0,
-                )
-                self._logged_stale.add(station_id)
-            elif not is_stale:
-                self._logged_stale.discard(station_id)
+        return readings
 
+    def _log_gaps(self, now: datetime, readings: dict[str, StationReading]) -> None:
+        missing = sorted(set(self._station_ids) - set(readings))
         if missing and not readings:
-            # Every configured gauge is absent from the file. Failing loudly beats
-            # returning an empty result, which leaves every entity unavailable with
-            # nothing in the log to explain why.
             raise UpdateFailed(
-                f"None of the {len(missing)} configured gauge(s) were found in the "
-                f"BOM water level file ({HCS_WATER_LEVEL_PREFIX}); "
-                f"missing: {', '.join(missing)}"
+                f"None of the {len(missing)} configured gauge(s) were found in the BOM "
+                f"water level files; missing: {', '.join(missing)}"
             )
         if missing and not self._logged_missing.issuperset(missing):
             _LOGGER.warning(
                 "No BOM water level data for gauge(s): %s. The remaining %d gauge(s) "
                 "are updating normally.",
-                ", ".join(sorted(missing)),
-                len(readings),
+                ", ".join(missing), len(readings),
             )
         self._logged_missing = set(missing)
-        self._save_history()
-
-        return readings
+        for station_id, reading in readings.items():
+            if reading.is_stale(now):
+                if station_id not in self._logged_stale:
+                    _LOGGER.warning(
+                        "BOM has not published a new reading for %s in %.0f minutes; "
+                        "the level shown is that old reading, not a current one",
+                        reading.name, reading.age_minutes(now) or 0,
+                    )
+                    self._logged_stale.add(station_id)
+            else:
+                self._logged_stale.discard(station_id)

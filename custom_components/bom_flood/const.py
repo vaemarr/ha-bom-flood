@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 DOMAIN = "bom_flood"
-PLATFORMS = ["sensor"]
+PLATFORMS = ["binary_sensor", "sensor"]
 DEFAULT_SCAN_INTERVAL = 15  # minutes
 
 FTP_HOST = "ftp.bom.gov.au"
@@ -11,6 +11,22 @@ FTP_PATH = "/anon/gen/fwo/"
 # national files are the only ones that cover every gauge offered during setup.
 HCS_WATER_LEVEL_PREFIX = "IDZ65910"
 HCS_RAINFALL_HOURLY_PREFIX = "IDZ65901"
+# Every water level reading from the last ~3 hours, published hourly. Seeds the
+# history after a restart and fills gaps between the 15-minute files.
+HCS_WATER_LEVEL_DENSE_PREFIX = "IDZ65911"
+
+FTP_TIMEOUT_S = 30
+FETCH_ATTEMPTS = 3
+FETCH_RETRY_DELAYS_S = (2, 5)
+# Hard ceiling on one whole update, so a stalled transfer cannot freeze the
+# displayed values while the coordinator still reports success.
+UPDATE_TIMEOUT_S = 180
+# After a failed fetch the last readings stay on display (ageing, and going
+# stale) for this long before the entities become unavailable.
+KEEP_SERVING_HOURS = 6
+# How often the regional map is re-read for revised flood levels and BOM's own
+# displayed status.
+MAP_REFRESH_HOURS = 1
 
 BOM_STATES: dict[str, str] = {
     "QLD": "Queensland",
@@ -20,40 +36,52 @@ BOM_STATES: dict[str, str] = {
     "TAS": "Tasmania",
 }
 
+# Labels describe what each map actually covers, from its gauges' rivers and
+# coordinates (checked 2026-10-19). Several maps cross state borders: a gauge
+# can appear on more than one map, and border rivers sit under either state.
 BOM_REGIONS: dict[str, dict[str, str]] = {
     "QLD": {
-        "IDQ65404": "Southeast Queensland (Brisbane, Logan, Gold Coast)",
-        "IDQ65412": "Southeast Queensland Extended (Sunshine Coast to Gold Coast)",
-        "IDQ65420": "Wide Bay / Burnett (Bundaberg, Maryborough)",
-        "IDQ65323": "North Queensland (Mackay, Far North)",
-        "IDQ65428": "Lockyer Valley / Darling Downs (Ipswich, Toowoomba)",
-        "IDQ65436": "North Queensland (Bowen, Proserpine)",
-        "IDQ65444": "Far North Queensland (Townsville, Cairns)",
+        "IDQ65404": "South East Queensland: Logan, Albert, Bremer, Gold Coast",
+        "IDQ65412": "South East Queensland: Brisbane, Lockyer, Mary, Logan",
+        "IDQ65420": "Wide Bay and Sunshine Coast: Mary, Burnett, Maroochy",
+        "IDQ65428": "Darling Downs and Granite Belt: Condamine, Macintyre, Balonne",
+        "IDQ65323": "Central and Western Queensland: Burdekin, Nogoa, Warrego, Thomson",
+        "IDQ65436": "North Queensland: Townsville, Mackay, Bowen",
+        "IDQ65444": "Far North Queensland: Cairns, Herbert, Barron, Johnstone",
     },
     "NSW": {
-        "IDN65190": "South Coast / Far South Coast",
-        "IDN65191": "North West (Namoi, Narrabri)",
-        "IDN65193": "Hunter Valley (Newcastle, Maitland)",
-        "IDN65195": "Inland Central (Condamine, Macintyre)",
-        "IDN65197": "Central West (Lachlan, Macquarie)",
-        "IDN65338": "Mid North Coast (Coffs Harbour)",
+        "IDN65190": "Northern Rivers and Gold Coast: Tweed, Richmond, Clarence",
+        "IDN65191": "Mid North Coast and Hunter: Macleay, Manning, Hastings, Hunter",
+        "IDN65193": "Sydney, Hawkesbury and Illawarra: Hawkesbury, Nepean, Georges, Shoalhaven",
+        "IDN65194": "South Coast and Snowy: Shoalhaven, Moruya, Bega, Snowy",
+        "IDN65195": "Northern Inland: Namoi, Gwydir, Macintyre, Barwon",
+        "IDN65196": "Central West: Lachlan, Macquarie, Bogan",
+        "IDN65197": "Riverina and Murray: Murrumbidgee, Murray, Lachlan",
+        "IDN65198": "Far West: Darling, Warrego, Culgoa, lower Lachlan",
+        "IDN65338": "Coffs Harbour: Coffs Creek",
     },
     "VIC": {
-        "IDV65255": "Far South East / Gippsland",
-        "IDV65263": "East Gippsland / Inland",
-        "IDV65271": "Melbourne Metro / Western Victoria",
-        "IDV65279": "South West / Grampians",
-        "IDV65287": "Far West / Murray-Darling",
+        "IDV65255": "Gippsland and North East: Snowy, Mitchell, Thomson, upper Murray",
+        "IDV65263": "Melbourne East and West Gippsland: Yarra, Latrobe, Thomson, King",
+        "IDV65271": "Melbourne West and Geelong: Werribee, Maribyrnong, Barwon",
+        "IDV65279": "Western Victoria and Wimmera: Wimmera, Glenelg, Avoca, Loddon",
+        "IDV65287": "Northern Victoria and Murray: Murray, Goulburn, Campaspe, Loddon",
     },
     "SA": {
-        "IDS65054": "Adelaide Metro / Central",
-        "IDS65072": "Adelaide / South",
+        "IDS65054": "Adelaide Hills and Metro: Torrens, Onkaparinga, Sturt",
+        "IDS65072": "Adelaide and Fleurieu: Onkaparinga, Torrens, Lake Alexandrina",
     },
     "TAS": {
-        "IDT65305": "Northern / Central Tasmania",
-        "IDT65315": "Northern / Central Tasmania (Extended)",
+        "IDT65305": "North and Central Tasmania: Mersey, Meander, South Esk",
+        "IDT65315": "Midlands and South East Tasmania: South Esk, Derwent, Macquarie",
+        "IDT65325": "Southern Tasmania: Derwent, Huon, South Esk",
     },
 }
+
+def warnings_url(state: str) -> str:
+    """BOM's flood warnings page for a state (checked live after BOM's 2025 rebuild)."""
+    return f"https://www.bom.gov.au/{state.lower()}/flood/" if state else "https://www.bom.gov.au/australia/flood/"
+
 
 CONF_STATE = "state"
 CONF_REGION = "region"
@@ -65,80 +93,89 @@ CONF_SCAN_INTERVAL = "scan_interval"
 CONF_CUSTOM_THRESHOLDS = "custom_thresholds"
 
 THRESHOLD_KEYS = ("minor_m", "moderate_m", "major_m")
+LEVEL_KEYS = ("minor", "moderate", "major")
 
 THRESHOLDS_SOURCE_BOM = "bom"
 THRESHOLDS_SOURCE_USER = "user"
 
-ATTR_FLOOD_STATUS = "flood_status"
-ATTR_TREND = "trend"
-ATTR_LAST_OBSERVED = "last_observed"
-ATTR_MINOR_LEVEL = "minor_flood_level_m"
-ATTR_MODERATE_LEVEL = "moderate_flood_level_m"
-ATTR_MAJOR_LEVEL = "major_flood_level_m"
-ATTR_STATION_ID = "station_id"
-ATTR_LATITUDE = "latitude"
-ATTR_LONGITUDE = "longitude"
-ATTR_QUALITY = "quality"
-ATTR_RATE_OF_RISE = "rate_of_rise_m_per_hr"
-ATTR_RAINFALL_1H = "rainfall_mm_1h"
-ATTR_RATE_CALCULATED_AT = "rate_calculated_at"
-ATTR_READING_AGE_MIN = "reading_age_min"
-ATTR_REJECTED_READING = "rejected_reading"
-ATTR_STALE = "stale"
-ATTR_STALE_AFTER_MIN = "stale_after_min"
-ATTR_THRESHOLD_SOURCE = "threshold_source"
-ATTR_TIME_TO_MINOR = "time_to_minor_flood_hr"
-ATTR_TIME_TO_MODERATE = "time_to_moderate_flood_hr"
-ATTR_TIME_TO_MAJOR = "time_to_major_flood_hr"
 
-# Matches the vocabulary BOM uses on its own flood maps. "No Classification" is
-# what BOM publishes for a working gauge it has not set flood thresholds for —
-# distinct from the state being unknown, which means we have no reading at all.
-FLOOD_STATUS_BELOW = "Below Flood Level"
-FLOOD_STATUS_MINOR = "Minor"
-FLOOD_STATUS_MODERATE = "Moderate"
-FLOOD_STATUS_MAJOR = "Major"
-FLOOD_STATUS_NO_CLASSIFICATION = "No Classification"
-
-# Previous observations are persisted so a restart does not throw away the
-# baseline the rate of rise is measured from. Beyond MAX_RATE_AGE_HOURS a cached
-# rate is dropped rather than shown: gauges report at very different cadences,
-# and a rate from hours ago is not evidence of what the water is doing now.
-STORAGE_VERSION = 1
-STORAGE_SAVE_DELAY = 30
-MAX_RATE_AGE_HOURS = 6
-
-# Rate of rise is measured across a window rather than between consecutive
-# readings. BOM occasionally publishes a single wrong value — a gauge sitting at
-# 1.71 m reported 0.81 m once, then 1.61 m — and consecutive-sample maths turns
-# the rebound into a 3.2 m/h rise, which projects a flood that is not coming.
-# Measuring against a reading at least RATE_WINDOW_MIN_HOURS old dilutes a single
-# bad sample; capping at RATE_WINDOW_MAX_HOURS keeps the rate responsive to a
-# genuine sustained rise.
-RATE_WINDOW_MIN_HOURS = 0.5
-RATE_WINDOW_MAX_HOURS = 2.0
-RATE_HISTORY_HOURS = 6.0
-
-# A gauge that goes quiet is more dangerous than a noisy one: the last reading
-# keeps being displayed as though it were current, and gauges tend to fail in
-# exactly the weather you care about. Staleness is judged against each gauge's
-# own observed cadence, since BOM gauges report anywhere from every 15 minutes
-# to every few hours.
-# Readings implying a physically impossible rate of change are rejected. This is
-# not statistical outlier rejection — a flash flood genuinely looks like a large
-# sudden jump, and filtering those would be dangerous. It is a physical bound: no
-# river gauge changes level at 10 m/h, let alone the 78 m/h implied when BOM
-# published -26.34 m for a gauge that had been sitting at 0.91 m. A run of
-# DATUM_SHIFT_SAMPLES consecutive rejections is treated as a genuine datum change
-# and accepted, so a re-levelled gauge cannot freeze the sensor permanently.
-MAX_PLAUSIBLE_RATE_M_PER_H = 10.0
-DATUM_SHIFT_SAMPLES = 3
-
-STALE_CADENCE_MULTIPLIER = 3
-STALE_MIN_HOURS = 1.0
-STALE_FALLBACK_HOURS = 3.0
+# Stable state keys for the Flood Status sensor. Displayed text comes from
+# translations ("Below flood level", "Minor flood", ...), so automations can match
+# on these keys without depending on wording. "no_classification" is a working
+# gauge BOM sets no flood levels for — distinct from the state being unknown,
+# which means there is no reading to classify.
+FLOOD_STATUS_BELOW = "below_flood_level"
+FLOOD_STATUS_MINOR = "minor"
+FLOOD_STATUS_MODERATE = "moderate"
+FLOOD_STATUS_MAJOR = "major"
+FLOOD_STATUS_NO_CLASSIFICATION = "no_classification"
+FLOOD_STATUS_OPTIONS = [
+    FLOOD_STATUS_BELOW,
+    FLOOD_STATUS_MINOR,
+    FLOOD_STATUS_MODERATE,
+    FLOOD_STATUS_MAJOR,
+    FLOOD_STATUS_NO_CLASSIFICATION,
+]
+# Ordinal severity, for sorting and "worst gauge" templates.
+FLOOD_SEVERITY = {
+    FLOOD_STATUS_NO_CLASSIFICATION: 0,
+    FLOOD_STATUS_BELOW: 1,
+    FLOOD_STATUS_MINOR: 2,
+    FLOOD_STATUS_MODERATE: 3,
+    FLOOD_STATUS_MAJOR: 4,
+}
 
 TREND_RISING = "rising"
 TREND_FALLING = "falling"
 TREND_STEADY = "steady"
-TREND_THRESHOLD_M = 0.01
+TREND_OPTIONS = [TREND_RISING, TREND_STEADY, TREND_FALLING]
+# Below this rate (m/h, either direction) a gauge is "steady", and no flood
+# projection is made from it.
+TREND_THRESHOLD_M_PER_H = 0.01
+
+STORAGE_VERSION = 1
+STORAGE_SAVE_DELAY = 30
+
+# Rate of rise is a robust (Theil-Sen) slope over the last RATE_WINDOW_HOURS of
+# accepted readings, widened up to RATE_WINDOW_MAX_HOURS (or 2.5 reporting
+# intervals, for slow gauges) until there are enough readings. It is not
+# reported until the readings span RATE_MIN_SPAN_HOURS. BOM occasionally
+# publishes a single wrong value — a gauge steady at 1.71 m reported 0.81 m once
+# — and a median of pairwise slopes is not dragged around by one such sample.
+RATE_WINDOW_HOURS = 1.0
+RATE_WINDOW_MAX_HOURS = 2.0
+RATE_MIN_SPAN_HOURS = 0.5
+RATE_HISTORY_HOURS = 8.0
+
+# Flood projections beyond this many hours are not shown.
+PROJECTION_HORIZON_HOURS = 48.0
+
+# Physical plausibility of a step between two readings. Not outlier statistics:
+# a flash flood genuinely looks like a sudden jump, so rises are given a generous
+# bound. Falls are physically slower and are the usual shape of a sensor fault
+# (dropouts, -26 m readings), so they get a tighter one. Elapsed time is floored
+# so readings a minute apart are not judged as an absurd rate, and capped so a
+# long gap does not make any value at all "plausible".
+MAX_RISE_FIRST_HOUR_M = 10.0
+MAX_RISE_M_PER_H_AFTER = 4.0
+MAX_FALL_M_PER_H = 3.0
+MIN_STEP_HOURS = 0.25
+MAX_STEP_HOURS = 6.0
+# Consecutive implausible readings — distinct BOM observations that agree with
+# each other — after which the gauge is taken to have genuinely changed level
+# (re-levelled, or a rise beyond the bound above) and the new level is accepted.
+DATUM_SHIFT_SAMPLES = 3
+# After a gauge changes datum (LGH <-> AHD), its flood status is withheld until
+# BOM's map shows a level within this of ours, i.e. on the same datum.
+DATUM_AGREEMENT_M = 0.5
+
+# A gauge that goes quiet is more dangerous than a noisy one: the last reading
+# keeps being displayed as though it were current. Staleness is judged against
+# each gauge's own cadence, since BOM gauges report anywhere from every few
+# minutes to every few hours.
+STALE_CADENCE_MULTIPLIER = 3
+STALE_MIN_HOURS = 1.0
+STALE_FALLBACK_HOURS = 3.0
+
+# An "hourly rainfall" value older than this is not shown as current.
+RAINFALL_MAX_AGE_HOURS = 2.0

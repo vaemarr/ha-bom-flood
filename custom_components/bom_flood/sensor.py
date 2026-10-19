@@ -1,74 +1,169 @@
+"""Sensors for each BOM river gauge."""
 from __future__ import annotations
 
-import logging
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfPrecipitationDepth
+from homeassistant.const import (
+    EntityCategory,
+    UnitOfLength,
+    UnitOfPrecipitationDepth,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
-    ATTR_FLOOD_STATUS,
-    ATTR_LAST_OBSERVED,
-    ATTR_LATITUDE,
-    ATTR_LONGITUDE,
-    ATTR_MAJOR_LEVEL,
-    ATTR_MINOR_LEVEL,
-    ATTR_MODERATE_LEVEL,
-    ATTR_QUALITY,
-    ATTR_RATE_CALCULATED_AT,
-    ATTR_READING_AGE_MIN,
-    ATTR_REJECTED_READING,
-    ATTR_STALE,
-    ATTR_STALE_AFTER_MIN,
-    ATTR_STATION_ID,
-    ATTR_THRESHOLD_SOURCE,
-    ATTR_TIME_TO_MAJOR,
-    ATTR_TIME_TO_MINOR,
-    ATTR_TIME_TO_MODERATE,
-    ATTR_TREND,
-    BOM_REGIONS,
-    CONF_REGION,
-    CONF_STATE,
-    CONF_STATIONS,
-    DOMAIN,
-    FLOOD_STATUS_BELOW,
-    FLOOD_STATUS_MAJOR,
-    FLOOD_STATUS_MINOR,
-    FLOOD_STATUS_MODERATE,
-    FLOOD_STATUS_NO_CLASSIFICATION,
+    FLOOD_SEVERITY,
+    FLOOD_STATUS_OPTIONS,
+    TREND_OPTIONS,
 )
-from .coordinator import BomFloodCoordinator, StationMeta, build_station_meta
+from .coordinator import BomFloodCoordinator, StationReading
+from .entity import BomFloodEntity
 
-_LOGGER = logging.getLogger(__name__)
-
-
-def _hours_to_threshold(
-    level: float | None,
-    rate: float | None,
-    threshold: float | None,
-) -> float | None:
-    """Hours until threshold at current rate of rise. None if falling, steady, or already past threshold."""
-    if level is None or rate is None or threshold is None or rate <= 0 or level >= threshold:
-        return None
-    return round((threshold - level) / rate, 1)
+# Entities only read coordinator data, so there is nothing to serialise.
+PARALLEL_UPDATES = 0
 
 
-def _station_device_info(entry: ConfigEntry, station_id: str, name: str) -> DeviceInfo:
-    state = entry.data.get(CONF_STATE, "")
-    region = entry.data.get(CONF_REGION, "")
-    model = BOM_REGIONS.get(state, {}).get(region, region)
-    return DeviceInfo(
-        identifiers={(DOMAIN, f"{entry.entry_id}_{station_id}")},
-        name=name,
-        manufacturer="Bureau of Meteorology",
-        model=model,
-        configuration_url="https://www.bom.gov.au/waterdata/",
-    )
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+@dataclass(frozen=True, kw_only=True)
+class BomSensorDescription(SensorEntityDescription):
+    value_fn: Callable[[StationReading, datetime], Any]
+    attrs_fn: Callable[[StationReading, datetime], dict[str, Any]] | None = None
+    unique_suffix: str | None = None
+
+
+def _level_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
+    return {
+        "station_id": r.station_id,
+        "observed_at": _iso(r.observed_at),
+        "datum": r.datum,
+        "minor_flood_level_m": r.thresholds.get("minor"),
+        "moderate_flood_level_m": r.thresholds.get("moderate"),
+        "major_flood_level_m": r.thresholds.get("major"),
+        "rejected_reading": r.rejected_reading,
+        "level_shift_at": _iso(r.level_shift_at),
+        "quality": r.quality,
+        "latitude": r.lat,
+        "longitude": r.lon,
+    }
+
+
+def _status_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
+    return {
+        "severity": FLOOD_SEVERITY.get(r.flood_status) if r.flood_status else None,
+        "stale": r.is_stale(now),
+        "minor_flood_level_m": r.thresholds.get("minor"),
+        "moderate_flood_level_m": r.thresholds.get("moderate"),
+        "major_flood_level_m": r.thresholds.get("major"),
+        "threshold_source": r.thresholds_source,
+        "thresholds_checked_at": _iso(r.thresholds_checked_at),
+        # BOM's own displayed classification, from its regional map, so any
+        # disagreement with the value computed here is visible.
+        "bom_status": r.bom_status,
+    }
+
+
+def _rate_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
+    return {
+        "window_hours": r.rate_window_h if r.rate(now) is not None else None,
+        "observed_at": _iso(r.observed_at),
+    }
+
+
+def _next_level_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
+    level, _ = r.next_level(now)
+    hours = r.hours_to(now)
+    return {
+        "next_level": level,
+        "time_to_minor_h": hours["minor"],
+        "time_to_moderate_h": hours["moderate"],
+        "time_to_major_h": hours["major"],
+        "rate_m_per_h": r.rate(now),
+        "method": "current rate, straight line; not a BOM forecast",
+    }
+
+
+def _rain_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
+    return {"observed_at": _iso(r.rainfall_observed_at)}
+
+
+SENSORS: tuple[BomSensorDescription, ...] = (
+    BomSensorDescription(
+        key="water_level",
+        unique_suffix="level",
+        device_class=SensorDeviceClass.DISTANCE,
+        native_unit_of_measurement=UnitOfLength.METERS,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=lambda r, now: r.level,
+        attrs_fn=_level_attrs,
+    ),
+    BomSensorDescription(
+        key="flood_status",
+        device_class=SensorDeviceClass.ENUM,
+        options=FLOOD_STATUS_OPTIONS,
+        value_fn=lambda r, now: r.flood_status,
+        attrs_fn=_status_attrs,
+    ),
+    BomSensorDescription(
+        key="rate_of_rise",
+        native_unit_of_measurement="m/h",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=lambda r, now: r.rate(now),
+        attrs_fn=_rate_attrs,
+    ),
+    BomSensorDescription(
+        key="trend",
+        device_class=SensorDeviceClass.ENUM,
+        options=TREND_OPTIONS,
+        value_fn=lambda r, now: r.trend(now),
+    ),
+    BomSensorDescription(
+        key="time_to_next_level",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        suggested_display_precision=1,
+        value_fn=lambda r, now: r.next_level(now)[1],
+        attrs_fn=_next_level_attrs,
+    ),
+    BomSensorDescription(
+        key="last_observed",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda r, now: r.observed_at,
+    ),
+    BomSensorDescription(
+        key="rainfall",
+        unique_suffix="rainfall_1h",
+        device_class=SensorDeviceClass.PRECIPITATION,
+        native_unit_of_measurement=UnitOfPrecipitationDepth.MILLIMETERS,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_fn=lambda r, now: r.rainfall_mm,
+        attrs_fn=_rain_attrs,
+    ),
+    BomSensorDescription(
+        key="stale_after",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda r, now: r.stale_after_min,
+    ),
+)
 
 
 async def async_setup_entry(
@@ -76,209 +171,38 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coordinator: BomFloodCoordinator = hass.data[DOMAIN][entry.entry_id]
-    station_ids: list[str] = entry.data[CONF_STATIONS]
-    station_meta = build_station_meta(entry)
-
+    coordinator: BomFloodCoordinator = entry.runtime_data
     entities: list[SensorEntity] = []
-    for station_id in station_ids:
-        meta = station_meta.get(station_id)
-        entities.append(BomFloodLevelSensor(coordinator, entry, station_id, meta))
-        entities.append(BomFloodStatusSensor(coordinator, entry, station_id, meta))
-        entities.append(BomFloodRateOfRiseSensor(coordinator, entry, station_id, meta))
-        entities.append(BomFloodRainfallSensor(coordinator, entry, station_id, meta))
-
+    for station_id in coordinator.station_ids:
+        for description in SENSORS:
+            entities.append(BomFloodSensor(coordinator, entry, station_id, description))
     async_add_entities(entities)
 
 
-class _BomFloodBaseSensor(CoordinatorEntity[BomFloodCoordinator], SensorEntity):
-    """Shared base for all BOM flood sensors."""
-
-    _attr_has_entity_name = True
+class BomFloodSensor(BomFloodEntity, SensorEntity):
+    entity_description: BomSensorDescription
 
     def __init__(
         self,
         coordinator: BomFloodCoordinator,
         entry: ConfigEntry,
         station_id: str,
-        meta: StationMeta | None,
+        description: BomSensorDescription,
     ) -> None:
-        super().__init__(coordinator)
-        self._station_id = station_id
-        self._meta = meta
-        self._entry = entry
-        self._station_name = meta.name if meta else station_id
+        super().__init__(coordinator, entry, station_id, description.key, description.unique_suffix)
+        self.entity_description = description
+        if description.key == "rainfall" and not coordinator.reports_rainfall(station_id):
+            # Most gauges never report rain; an always-unknown sensor is noise.
+            self._attr_entity_registry_enabled_default = False
 
     @property
-    def device_info(self) -> DeviceInfo:
-        return _station_device_info(self._entry, self._station_id, self._station_name)
+    def native_value(self) -> Any:
+        r = self.reading
+        return self.entity_description.value_fn(r, self.now()) if r else None
 
     @property
-    def available(self) -> bool:
-        """Unavailable only when BOM is not reporting this gauge at all.
-
-        A gauge that is in the file but missing an individual value stays
-        available and reports 'unknown' for that value, so a working gauge with a
-        gap in one quantity is not mistaken for one that has dropped off the feed.
-        """
-        return (
-            self.coordinator.last_update_success
-            and self._station_id in (self.coordinator.data or {})
-        )
-
-    def _reading(self):
-        return (self.coordinator.data or {}).get(self._station_id)
-
-
-class BomFloodLevelSensor(_BomFloodBaseSensor):
-    """Water level in metres. Primary sensor for each gauge."""
-
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = "m"
-    _attr_icon = "mdi:waves"
-
-    def __init__(self, coordinator, entry, station_id, meta):
-        super().__init__(coordinator, entry, station_id, meta)
-        self._attr_unique_id = f"{entry.entry_id}_{station_id}_level"
-        self._attr_name = "Water Level"
-
-    @property
-    def native_value(self) -> float | None:
-        r = self._reading()
-        return r.level if r else None
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        r = self._reading()
-        attrs: dict[str, Any] = {ATTR_STATION_ID: self._station_id}
-        if r:
-            attrs[ATTR_FLOOD_STATUS] = r.flood_status
-            attrs[ATTR_TREND] = r.trend
-            attrs[ATTR_LAST_OBSERVED] = r.timestamp
-            attrs[ATTR_QUALITY] = r.quality
-            # How old the displayed reading is. A gauge that stops reporting
-            # keeps showing its last value, which is the failure most likely to
-            # mislead during a flood, so make the age explicit.
-            attrs[ATTR_READING_AGE_MIN] = r.reading_age_min
-            attrs[ATTR_STALE_AFTER_MIN] = r.stale_after_min
-            attrs[ATTR_STALE] = r.stale
-            if r.rejected_reading is not None:
-                attrs[ATTR_REJECTED_READING] = r.rejected_reading
-        if self._meta:
-            attrs[ATTR_MINOR_LEVEL] = self._meta.minor_m
-            attrs[ATTR_MODERATE_LEVEL] = self._meta.moderate_m
-            attrs[ATTR_MAJOR_LEVEL] = self._meta.major_m
-            attrs[ATTR_LATITUDE] = self._meta.lat
-            attrs[ATTR_LONGITUDE] = self._meta.lon
-            if r and r.rate_of_rise_m_per_hr is not None:
-                attrs[ATTR_TIME_TO_MINOR] = _hours_to_threshold(
-                    r.level, r.rate_of_rise_m_per_hr, self._meta.minor_m
-                )
-                attrs[ATTR_TIME_TO_MODERATE] = _hours_to_threshold(
-                    r.level, r.rate_of_rise_m_per_hr, self._meta.moderate_m
-                )
-                attrs[ATTR_TIME_TO_MAJOR] = _hours_to_threshold(
-                    r.level, r.rate_of_rise_m_per_hr, self._meta.major_m
-                )
-        return attrs
-
-
-class BomFloodStatusSensor(_BomFloodBaseSensor):
-    """Flood status as a readable state, using BOM's own classification names.
-
-    Gauges BOM sets no thresholds for report "No Classification"; the state is
-    only 'unknown' when there is genuinely no reading to classify.
-    """
-
-    _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = [
-        FLOOD_STATUS_BELOW,
-        FLOOD_STATUS_MINOR,
-        FLOOD_STATUS_MODERATE,
-        FLOOD_STATUS_MAJOR,
-        FLOOD_STATUS_NO_CLASSIFICATION,
-    ]
-    _attr_icon = "mdi:water-alert"
-
-    def __init__(self, coordinator, entry, station_id, meta):
-        super().__init__(coordinator, entry, station_id, meta)
-        self._attr_unique_id = f"{entry.entry_id}_{station_id}_flood_status"
-        self._attr_name = "Flood Status"
-
-    @property
-    def native_value(self) -> str | None:
-        r = self._reading()
-        return r.flood_status if r else None
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        r = self._reading()
-        if not r:
-            return {}
-        return {
-            ATTR_TREND: r.trend,
-            ATTR_LAST_OBSERVED: r.timestamp,
-            ATTR_READING_AGE_MIN: r.reading_age_min,
-            ATTR_STALE: r.stale,
-            ATTR_MINOR_LEVEL: self._meta.minor_m if self._meta else None,
-            ATTR_MODERATE_LEVEL: self._meta.moderate_m if self._meta else None,
-            ATTR_MAJOR_LEVEL: self._meta.major_m if self._meta else None,
-            ATTR_THRESHOLD_SOURCE: self._meta.thresholds_source if self._meta else None,
-        }
-
-
-class BomFloodRateOfRiseSensor(_BomFloodBaseSensor):
-    """Rate of water level change in m/hr. Positive = rising, negative = falling."""
-
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = "m/h"
-    _attr_icon = "mdi:arrow-up-down"
-    _attr_suggested_display_precision = 3
-
-    def __init__(self, coordinator, entry, station_id, meta):
-        super().__init__(coordinator, entry, station_id, meta)
-        self._attr_unique_id = f"{entry.entry_id}_{station_id}_rate_of_rise"
-        self._attr_name = "Rate of Rise"
-
-    @property
-    def native_value(self) -> float | None:
-        r = self._reading()
-        return r.rate_of_rise_m_per_hr if r else None
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        r = self._reading()
-        if not r:
-            return {}
-        return {
-            ATTR_TREND: r.trend,
-            # Which BOM observation produced this rate, so a value carried over
-            # between publishes is not mistaken for a fresh calculation.
-            ATTR_RATE_CALCULATED_AT: r.rate_calculated_at,
-        }
-
-
-class BomFloodRainfallSensor(_BomFloodBaseSensor):
-    """Hourly rainfall in mm. Only available when BOM provides rainfall data for this station."""
-
-    _attr_device_class = SensorDeviceClass.PRECIPITATION
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = UnitOfPrecipitationDepth.MILLIMETERS
-    _attr_icon = "mdi:weather-rainy"
-
-    def __init__(self, coordinator, entry, station_id, meta):
-        super().__init__(coordinator, entry, station_id, meta)
-        self._attr_unique_id = f"{entry.entry_id}_{station_id}_rainfall_1h"
-        self._attr_name = "Hourly Rainfall"
-
-    @property
-    def native_value(self) -> float | None:
-        """None (state 'unknown') when BOM reports no rainfall for this gauge.
-
-        57% of gauges in the water level file have no rainfall entry at all. The
-        gauge is reachable and reporting, there is just no value for this quantity,
-        which is 'unknown' rather than 'unavailable'. It must not be reported as 0
-        either: 0 mm is a real reading, sent by most gauges on a dry day.
-        """
-        r = self._reading()
-        return r.rainfall_mm_1h if r else None
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        r = self.reading
+        if r is None or self.entity_description.attrs_fn is None:
+            return None
+        return self.entity_description.attrs_fn(r, self.now())

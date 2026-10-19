@@ -3,56 +3,125 @@
     "step": {
       "user": {
         "title": "BOM Flood Monitor",
-        "description": "Select your state.",
+        "description": "Choose the state whose river gauges you want to monitor.",
         "data": {
           "state": "State"
+        },
+        "data_description": {
+          "state": "Gauges near a border can appear under either state."
         }
       },
       "region": {
-        "title": "Select Region",
-        "description": "Select the flood monitoring region within your state.",
+        "title": "Choose a region",
+        "description": "Each region is one of BOM's regional flood maps.",
         "data": {
           "region": "Region"
+        },
+        "data_description": {
+          "region": "Add the integration again to monitor gauges in another region."
         }
       },
       "stations": {
-        "title": "Select Gauges",
-        "description": "Choose the river gauges you want to monitor. Each gauge becomes a sensor entity.",
+        "title": "Choose gauges",
+        "description": "Each gauge becomes a device with its own water level, flood status, trend and alerts.",
         "data": {
           "stations": "Gauges"
+        },
+        "data_description": {
+          "stations": "The number in brackets is BOM's station number. Gauges marked \"no BOM flood levels\" show a level but no flood status unless you add your own levels later in Configure."
         }
       },
       "scan_interval": {
-        "title": "Update Interval",
-        "description": "How often to poll BOM for new readings. BOM updates data approximately every 15 minutes.",
+        "title": "Update interval",
+        "description": "BOM publishes new water levels about every 15 minutes.",
         "data": {
-          "scan_interval": "Update interval (minutes)"
+          "scan_interval": "Update interval"
+        },
+        "data_description": {
+          "scan_interval": "Polling more often than every 15 minutes rarely finds new readings."
         }
       }
     },
     "error": {
-      "cannot_connect": "Could not connect to BOM FTP server. Check your internet connection.",
-      "no_stations": "Please select at least one gauge."
+      "cannot_connect": "Could not reach the BOM FTP server. Check the internet connection and try again.",
+      "no_gauges_found": "BOM's map for this region returned no gauges. BOM may have changed the page; try again later.",
+      "no_stations": "Choose at least one gauge."
+    },
+    "abort": {
+      "already_configured": "This region is already set up. Use Configure on it to add or remove gauges."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "BOM Flood Monitor Options",
+        "title": "BOM Flood Monitor options",
+        "description": "Change which gauges are monitored and how often BOM is polled.",
         "data": {
           "stations": "Gauges",
-          "scan_interval": "Update interval (minutes)"
+          "scan_interval": "Update interval"
         },
-        "description": "Change which gauges are monitored and how often BOM is polled."
+        "data_description": {
+          "stations": "Removing a gauge removes its device.",
+          "scan_interval": "BOM publishes about every 15 minutes."
+        }
       },
       "thresholds": {
-        "title": "Flood Levels for Unclassified Gauges",
-        "description": "BOM publishes no flood classification levels for: {gauges}.\n\nThese gauges report \"No Classification\" until you supply levels here. Enter the gauge heights in metres at which you consider minor, moderate and major flooding to begin, or leave blank to keep them unclassified. Values must increase from minor to major.\n\nNote: these are your own figures, not official BOM classifications, and any status derived from them is only as good as the levels you enter. Always follow official BOM warnings and emergency services advice."
+        "title": "Flood levels for unclassified gauges",
+        "description": "BOM publishes no flood levels for: {gauges}.\n\nThese gauges show \"No flood levels set\" until you enter levels here. Enter the gauge height in metres at which minor, moderate and major flooding begins, or leave blank. Levels must increase from minor to major.\n\nThese are your own figures, not official BOM classifications. Always follow official BOM warnings and emergency services advice."
       }
     },
     "error": {
-      "cannot_connect": "Could not refresh station list from BOM FTP.",
-      "thresholds_order": "Flood levels must increase: minor lower than moderate, moderate lower than major."
+      "cannot_connect": "Could not refresh the gauge list from BOM.",
+      "no_stations": "Choose at least one gauge.",
+      "thresholds_order": "Flood levels must increase: minor below moderate, moderate below major."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "water_level": {
+        "name": "Water level"
+      },
+      "flood_status": {
+        "name": "Flood status",
+        "state": {
+          "below_flood_level": "Below flood level",
+          "minor": "Minor flood",
+          "moderate": "Moderate flood",
+          "major": "Major flood",
+          "no_classification": "No flood levels set"
+        }
+      },
+      "rate_of_rise": {
+        "name": "Rate of rise"
+      },
+      "trend": {
+        "name": "Trend",
+        "state": {
+          "rising": "Rising",
+          "steady": "Steady",
+          "falling": "Falling"
+        }
+      },
+      "time_to_next_level": {
+        "name": "Time to next flood level"
+      },
+      "last_observed": {
+        "name": "Last reading"
+      },
+      "rainfall": {
+        "name": "Rainfall last hour"
+      },
+      "stale_after": {
+        "name": "Stale after"
+      }
+    },
+    "binary_sensor": {
+      "stale": {
+        "name": "Reading out of date"
+      },
+      "flooding": {
+        "name": "Flooding"
+      }
     }
   }
 }
