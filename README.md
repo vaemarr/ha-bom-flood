@@ -59,9 +59,12 @@ Results (October 2026):
 
 **Why "earliest likely" rather than a single time.** A straight line from the current
 rate is right to within 30% only 38% of the time: the river speeds up after the
-projection (31% of cases), isn't rising yet (17%), or slows down (10%). Nine methods
-were tried to do better from the gauge data alone (other windows, curve fitting, a
-decaying rate, a learned model, upstream gauges); none passed 44%. So the entity
+projection (31% of cases), isn't rising yet (17%), or slows down (10%). Fifteen
+approaches were tested on floods held out of training: other windows, curve fitting,
+a decaying rate, median calibration, a learned model, similar past moments, gradient
+boosting, upstream gauges, and BOM rainfall. The best (adding rainfall) reached 39.5%;
+none came close to 90%, because the missing information (rain still to fall, the
+catchment's response) isn't in the gauge data. So the entity
 shows a time calibrated on past floods to be early rather than late: the river reached
 the level no earlier than the time shown in 93.6% of cases. It is deliberately
 cautious, typically about 40% of the real time, so "1.1 h" means "possibly in about an
