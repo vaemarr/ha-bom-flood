@@ -46,6 +46,7 @@ def _warning_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
         "forecast_level_m": f.level_m if f else None,
         "forecast_class": f.flood_class if f else None,
         "forecast_when": f.when if f else None,
+        "forecast_direction": f.direction if f else None,
         "bom_says": " ".join(f.sentences)[:600] if f else None,
         "warnings_checked": r.warnings_ok,
     }

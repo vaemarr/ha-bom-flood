@@ -638,14 +638,24 @@ WARNING_FILE_RE = re.compile(r"^ID[QNVST][23]\d{4}\.txt$")
 _TITLE_RE = re.compile(r"^.*\bFlood (?:Warning|Watch)\b.*$", re.IGNORECASE | re.MULTILINE)
 _ISSUED_RE = re.compile(r"^Issued at (.+)$", re.MULTILINE)
 _CLASS_RE = re.compile(r"\b(minor|moderate|major)\b", re.IGNORECASE)
+# Real warnings say "is likely to exceed the minor flood level (5.00 m) Friday
+# morning", "may peak near the minor flood level (4.00 m)", "may reach around
+# 3.40 m Thursday evening, with minor flooding" or "is likely to fall below the
+# minor flood level (2.00 m) during Thursday evening".
 _FORECAST_RE = re.compile(
-    r"\b(?:is|are)\s+(?:likely|expected|forecast)\s+to\s+"
-    r"(?P<verb>reach|peak|exceed|remain|rise\s+to|ease\s+to|fall\s+to)\s+"
-    r"(?:(?:around|near|above|below|at|about)\s+)?"
-    r"(?P<level>-?\d+(?:\.\d+)?)\s*(?:m\b|metres?)"
+    r"\b(?:(?:is|are)\s+(?:likely|expected|forecast)\s+to|may|could|will)\s+"
+    r"(?P<verb>reach|peak|exceed|remain|rise\s+to|rise\s+above|ease\s+to|fall\s+to|fall\s+below|drop\s+below)\s+"
+    r"(?P<qual>(?:around|near|above|below|at|about)\s+)?"
+    r"(?:the\s+(?P<threshold>minor|moderate|major)\s+flood\s+level\s*\(\s*)?"
+    r"(?P<level>-?\d+(?:\.\d+)?)\s*(?:m\b|metres?)\)?"
     r"(?P<rest>[^.]*)",
     re.IGNORECASE,
 )
+_WITH_CLASS_RE = re.compile(r"\bwith\s+(minor|moderate|major)\s+flooding\b", re.IGNORECASE)
+_HEADING_RE = re.compile(r"^[A-Z][^.:]{2,80}:$")
+# A sentence that carries on about the gauge named just before it.
+_CONTINUES_RE = re.compile(r"^(?:The|This)\s+river\b|^Further\s+(?:rises|falls)\b|^It\b", re.IGNORECASE)
+_OTHER_GAUGE_RE = re.compile(r"\b(?:River|Creek|Brook)\s+at\s+[A-Z]")
 _STOP_SECTIONS = re.compile(r"^(Latest River Heights|River Heights|Next issue|Warning Information)\b", re.IGNORECASE)
 
 
@@ -668,6 +678,7 @@ class GaugeForecast:
     level_m: float | None
     flood_class: str | None
     when: str | None
+    direction: str | None = None  # rise / peak / remain / fall
 
 
 def parse_flood_warning(product_id: str, text: str) -> FloodWarning | None:
@@ -701,22 +712,77 @@ def _location_pattern(gauge_name: str) -> re.Pattern[str]:
     return re.compile(pattern, re.IGNORECASE)
 
 
+def _split_sentences(lines: list[str]) -> list[str]:
+    text = " ".join(" ".join(lines).split())
+    return [s for s in re.split(r"(?<=[.!?])\s+", text) if s]
+
+
+def _paragraph_sentences(body: str) -> list[list[str]]:
+    """Body text as paragraphs of sentences; section headings stand alone."""
+    paragraphs: list[list[str]] = []
+    for block in re.split(r"\n\s*\n", body):
+        sentences: list[str] = []
+        lines: list[str] = []
+        for line in block.splitlines():
+            if _HEADING_RE.match(line.strip()):
+                sentences += _split_sentences(lines)
+                sentences.append(line.strip())
+                lines = []
+            else:
+                lines.append(line)
+        sentences += _split_sentences(lines)
+        if sentences:
+            paragraphs.append(sentences)
+    return paragraphs
+
+
+_DIRECTION = {"reach": "rise", "exceed": "rise", "rise to": "rise", "rise above": "rise",
+              "peak": "peak", "remain": "remain", "ease to": "fall", "fall to": "fall",
+              "fall below": "fall", "drop below": "fall"}
+
+
 def gauge_forecast(warning: FloodWarning, gauge_name: str) -> GaugeForecast | None:
-    """What a warning says about one gauge, or None if it does not mention it."""
+    """What a warning says about one gauge, or None if it does not mention it.
+
+    Sentences naming the gauge are kept, plus sentences straight after them that
+    carry on about it ("The river may reach around 5.20 m Friday morning").
+    When several forecasts are given, the highest level is reported.
+    """
     location = _location_pattern(gauge_name)
-    flat = " ".join(warning.body.split())
-    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", flat) if location.search(s)]
+    sentences: list[str] = []
+    for paragraph in _paragraph_sentences(warning.body):
+        ours = False
+        for sentence in paragraph:
+            if location.search(sentence):
+                ours = True
+            elif not (ours and _CONTINUES_RE.match(sentence)) or _OTHER_GAUGE_RE.search(sentence):
+                ours = False
+            if ours:
+                sentences.append(sentence)
     if not sentences:
         return None
-    level = flood_class = when = None
+    best: GaugeForecast | None = None
     for sentence in sentences:
-        match = _FORECAST_RE.search(sentence)
-        if match is None:
-            continue
-        level = safe_float(match.group("level"))
-        rest = match.group("rest")
-        cls = _CLASS_RE.search(rest)
-        flood_class = cls.group(1).lower() if cls else None
-        when_part = re.split(r",|\bwith\b", rest, maxsplit=1)[0].strip()
-        when = when_part or None
-    return GaugeForecast(tuple(sentences), level, flood_class, when)
+        for match in _FORECAST_RE.finditer(sentence):
+            level = safe_float(match.group("level"))
+            if level is None:
+                continue
+            verb = " ".join(match.group("verb").lower().split())
+            direction = _DIRECTION.get(verb)
+            rest = match.group("rest")
+            # Only "with minor flooding" names the class; "just below the minor
+            # flood level" must not.
+            cls = _WITH_CLASS_RE.search(rest)
+            flood_class = cls.group(1).lower() if cls else None
+            threshold = match.group("threshold")
+            qual = (match.group("qual") or "").strip().lower()
+            above = (direction == "rise" and qual in ("", "above")) or (direction in ("peak", "remain") and qual == "above")
+            if flood_class is None and threshold and above:
+                flood_class = threshold.lower()  # "exceed the minor flood level (5.00 m)"
+            when = re.split(r",|\bwith\b", rest, maxsplit=1)[0].strip() or None
+            candidate = GaugeForecast((), level, flood_class, when, direction)
+            if best is None or level > (best.level_m or float("-inf")):
+                best = candidate
+    if best is None:
+        return GaugeForecast(tuple(sentences), None, None, None)
+    return GaugeForecast(tuple(sentences), best.level_m, best.flood_class, best.when, best.direction)

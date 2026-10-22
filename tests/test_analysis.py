@@ -473,3 +473,72 @@ def test_warning_file_names():
     assert A.WARNING_FILE_RE.match("IDN36501.txt")
     assert not A.WARNING_FILE_RE.match("IDQ65404.html")
     assert not A.WARNING_FILE_RE.match("IDZ65910_20261019.hcs")
+
+
+# Real BOM warnings captured by tools/capture_warnings.py (October 2026).
+
+def _real(name: str) -> A.FloodWarning:
+    text = (pathlib.Path(__file__).parent / "fixtures" / f"warnings_{name}.txt").read_text()
+    return A.parse_flood_warning(name.split("_")[0], text)
+
+
+def test_real_titles_and_severity():
+    assert _real("IDQ20827_condamine").title == "Initial Minor Flood Warning for the Upper Condamine River"
+    assert _real("IDQ20827_condamine").severity == "minor"
+    assert _real("IDQ20795_maroochy").severity is None  # "Initial Flood Warning" names no class
+
+
+def test_real_thunderstorm_warnings_rejected():
+    assert _real("IDQ21035_thunderstorm_cancel") is None
+    assert _real("IDS21033_thunderstorm") is None
+
+
+def test_real_may_exceed_then_the_river_may_reach():
+    """'may exceed the minor flood level (5.00 m)' then 'The river may reach around 5.20 m'."""
+    f = A.gauge_forecast(_real("IDQ20827_condamine"), "Condamine River at Warwick")
+    assert (f.level_m, f.flood_class, f.when, f.direction) == (5.2, "minor", "Friday morning", "rise")
+    assert any(s.startswith("The river may reach around 5.20 m") for s in f.sentences)
+    assert not any(s.endswith(":") for s in f.sentences)  # section headings are not sentences
+
+
+def test_real_continuation_stops_at_next_gauge():
+    w = _real("IDQ20827_condamine")
+    pratten = A.gauge_forecast(w, "Condamine River at Pratten")
+    assert (pratten.level_m, pratten.when) == (5.5, "Friday afternoon")
+    assert not any("Tummaville" in s for s in pratten.sentences)
+    tumma = A.gauge_forecast(w, "Condamine River at Tummaville")
+    assert (tumma.level_m, tumma.flood_class, tumma.when) == (6.0, "minor", "Friday evening")
+    assert A.gauge_forecast(w, "Condamine River at Killarney") is None  # only in the height table
+
+
+def test_real_peak_just_below_minor_is_not_minor():
+    f = A.gauge_forecast(_real("IDQ20845_warrego_1"), "Warrego River at Charleville")
+    assert (f.level_m, f.flood_class, f.direction) == (3.7, None, "peak")
+    f = A.gauge_forecast(_real("IDQ20845_warrego_2"), "Warrego River at Charleville")
+    assert (f.level_m, f.flood_class, f.when) == (4.0, None, "Friday afternoon")  # "peak near"
+
+
+def test_real_likely_to_exceed_threshold():
+    f = A.gauge_forecast(_real("IDQ20845_warrego_1"), "Warrego River at Bakers Bend")
+    assert (f.level_m, f.flood_class, f.direction) == (5.0, "minor", "rise")
+    assert f.when == "during Saturday 24 October"
+    f = A.gauge_forecast(_real("IDQ20845_warrego_2"), "Warrego River at Bakers Bend")
+    assert (f.level_m, f.flood_class, f.when) == (5.6, "minor", "during Saturday")
+
+
+def test_real_highest_forecast_is_reported():
+    f = A.gauge_forecast(_real("IDQ20855_bulloo"), "Bulloo River at Quilpie")
+    assert (f.level_m, f.flood_class, f.when) == (3.4, "minor", "Thursday evening")
+    assert any("Wednesday evening" in s for s in f.sentences)  # first crossing kept in the text
+
+
+def test_real_peak_above_and_fall_below():
+    f = A.gauge_forecast(_real("IDQ20860_barcoo_1"), "Barcoo River at Blackall")
+    assert (f.level_m, f.flood_class, f.direction) == (2.0, "minor", "peak")
+    f = A.gauge_forecast(_real("IDQ20860_barcoo_4"), "Barcoo River at Blackall")
+    assert (f.level_m, f.flood_class, f.when, f.direction) == (2.0, None, "during Thursday evening", "fall")
+
+
+def test_real_warning_without_gauge_forecasts():
+    w = _real("IDQ20795_maroochy")
+    assert A.gauge_forecast(w, "Mooloolah River at Mooloolah") is None  # table only

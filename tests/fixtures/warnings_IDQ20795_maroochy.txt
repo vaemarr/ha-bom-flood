@@ -1,0 +1,75 @@
+IDQ20795
+Australian Government Bureau of Meteorology
+
+Initial Flood Warning for the Maroochy River, Coochin Creek and Mooloolah River
+
+Issued at 2:01 pm AEST on Thursday 22 October 2026
+Flood Warning Number: 1
+
+
+Moderate to heavy rainfall has been observed along the Maroochy River, Coochin Creek and
+Mooloolah River catchments since Wednesday. River level rises and areas of flooding are
+occurring.
+
+Further rises are possible with forecast rainfall.
+
+Maroochy River:
+Minor flooding is occurring along the Maroochy River.
+
+Mooloolah River:
+Minor flooding is occurring along the Mooloolah River.
+
+Coochin Creek:
+Minor to moderate flooding is occurring along Coochin Creek.
+
+Safety Advice:
+* Don't drive, walk, swim or play in floodwater because it is dangerous.
+* Stay away from flooded drains, rivers, streams and waterways.
+* Obey road closure signs. Plan ahead so you don't drive on flooded roads.
+* Check the ABC and local media for updates. The situation can change quickly, so stay
+informed.
+* For local emergency management warnings and advice visit
+www.disaster.qld.gov.au/warnings.
+
+For emergency assistance call SES on telephone number 132 500. In life-threatening
+emergencies, call 000 (triple zero) immediately.
+
+Next issue:
+The next warning will be issued by 02:00 PM AEST on Friday 23 October 2026.
+
+Latest River Heights:
+Location                                    River Height   Tendency Time of Observation
+Teewah Creek at Coops Corner                  0.72 m       Steady   1:00 pm Thu 22/10/26
+Lake Cootharaba at Boreen Point               0.12 m       Steady   12:18 pm Thu 22/10/26
+Noosa River at Tewantin
+Noosa Bar                                    0.35 mAHD     Rising   1:58 pm Thu 22/10/26
+Mooloolah River at Mooloolah                  3.98 m       Rising   1:20 pm Thu 22/10/26
+Mooloolah River at Ewen Maddock Dam HW      25.66 mAHD     Rising   11:25 am Thu 22/10/26
+Mooloolah River at Jordan St                  4.25 m       Rising   1:28 pm Thu 22/10/26
+Mooloolah River at Palmview                  3.52 mAHD     Rising   1:42 pm Thu 22/10/26
+Mooloolah River at Parrearra Weir US          0.30 m       Steady   1:58 pm Thu 22/10/26
+Mountain Creek at Dixon Road                 3.01 mAHD     Steady   11:15 am Thu 22/10/26
+Mooloolaba Tide                               0.93 m       Rising   1:36 pm Thu 22/10/26
+Coochin Creek at Old Gympie Rd                4.00 m       Falling  1:55 pm Thu 22/10/26
+Coonowrin Creek at Glasshouse Mountains       2.65 m       Rising   1:09 pm Thu 22/10/26
+Coochin Creek at Mawsons Rd                   2.83 m       Rising   1:00 pm Thu 22/10/26
+North Maroochy River at Eumundi               2.45 m       Rising   1:20 pm Thu 22/10/26
+Cooloolabin Dam HW                          292.72 mAHD    Steady   1:21 pm Thu 22/10/26
+South Maroochy River at Wappa Dam           45.70 mAHD     Rising   1:57 pm Thu 22/10/26
+South Maroochy River at Kiamba                2.93 m       Rising   1:55 pm Thu 22/10/26
+Poona Dam HW                                152.18 mAHD    Steady   11:22 am Thu 22/10/26
+South Maroochy River at Yandina               2.73 m       Rising   1:15 pm Thu 22/10/26
+Maroochy River at Dunethin Rock               0.96 m       Rising   1:55 pm Thu 22/10/26
+Maroochy River at Stoney Wharf Road           0.52 m       Rising   1:57 pm Thu 22/10/26
+Paynter Creek at Diddillibah                  2.96 m       Rising   12:59 pm Thu 22/10/26
+Eudlo Creek at Eudlo                          3.87 m       Rising   1:54 pm Thu 22/10/26
+Eudlo Creek at Kiels Mountain                 2.61 m       Rising   1:24 pm Thu 22/10/26
+Maroochy River at Picnic Point                0.46 m       Rising   1:22 pm Thu 22/10/26
+
+This advice is also available by dialling 1300 659 219. Warning, rainfall and river
+information are available at http://www.bom.gov.au/australia/flood.
+
+Copyright Commonwealth of Australia 2011, Bureau of Meteorology (ABN 92 637 533
+532).  Users of these web pages are deemed to have read and accepted the
+conditions described in the Copyright, Disclaimer, and Privacy statements
+(http://www.bom.gov.au/other/copyright.shtml).
