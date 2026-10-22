@@ -25,7 +25,7 @@ Each gauge you pick becomes a device with these entities:
 | **Last reading** | `12 minutes ago` | When BOM observed the level shown |
 | **Reading out of date** | `On` | The gauge has stopped reporting. Don't trust the level as current |
 | **Flooding** | `On` | The gauge is at Minor flood or above |
-| **Rainfall last hour** | `4.5 mm` | For gauges that report rain (off by default for gauges that don't) |
+| **Rainfall last hour** | `4.5 mm` | For gauges that report rain (off by default for gauges that don't). Updated every 15 minutes where BOM has 15-minute rain for the gauge, otherwise hourly. Attributes: `last_15_min_mm`, `source` |
 
 Flood status, trend and both binary sensors use stable state values (`below_flood_level`,
 `minor`, `moderate`, `major`, `no_classification`; `rising`, `steady`, `falling`) with
@@ -94,7 +94,8 @@ BOM publishes these on its anonymous FTP server (`ftp.bom.gov.au/anon/gen/fwo/`)
 |---|---|
 | `IDZ65910` | Latest water level for every gauge, every ~15 minutes |
 | `IDZ65911` | Every reading from the last ~3 hours, hourly. Fills gaps and restores history after a restart |
-| `IDZ65901` | Hourly rainfall |
+| `IDZ65900` | 15-minute rainfall. The last four readings give a rolling last hour (checked: they add up to BOM's hourly total in 481 of 482 rain hours). Only downloaded when a new file appears |
+| `IDZ65901` | Hourly rainfall, used where a gauge has no complete 15-minute hour |
 | Flood warnings (`IDQ2xxxx`, `IDN3xxxx`, ...) | Official BOM flood warnings and watches, checked every poll |
 | Regional maps (`IDQ65404.html` etc.) | Gauge names, flood levels, and BOM's own displayed status. Read at setup and again every hour |
 

@@ -104,7 +104,11 @@ def _next_level_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
 
 
 def _rain_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
-    return {"observed_at": _iso(r.rainfall_observed_at)}
+    return {
+        "observed_at": _iso(r.rainfall_observed_at),
+        "last_15_min_mm": r.rainfall_15min_mm,
+        "source": r.rainfall_source,
+    }
 
 
 SENSORS: tuple[BomSensorDescription, ...] = (

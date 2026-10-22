@@ -36,6 +36,7 @@ from .const import (
     FTP_HOST,
     FTP_PATH,
     FTP_TIMEOUT_S,
+    HCS_RAINFALL_15MIN_PREFIX,
     HCS_RAINFALL_HOURLY_PREFIX,
     HCS_WATER_LEVEL_DENSE_PREFIX,
     HCS_WATER_LEVEL_PREFIX,
@@ -171,6 +172,8 @@ class StationReading:
     level_shift_at: datetime | None = None
     rainfall_mm: float | None = None
     rainfall_observed_at: datetime | None = None
+    rainfall_15min_mm: float | None = None
+    rainfall_source: str | None = None  # "15-minute" or "hourly"
     bom_status: str | None = None
     bom_trend: str | None = None
     feed_ok: bool = True
@@ -351,6 +354,10 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
         self._rejected: dict[str, float] = {}
         self._datum_changed: set[str] = set()
         self._dense = _FeedState()
+        self._rain_hourly = _FeedState()
+        self._rain_15min = _FeedState()
+        # station -> {end of 15-minute period: mm}, last few hours only
+        self._quarters: dict[str, dict[datetime, float]] = {}
         self._thresholds = _ThresholdCache()
         self._last_success: datetime | None = None
         self._failures = 0
@@ -369,7 +376,7 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
 
     def reports_rainfall(self, station_id: str) -> bool:
         """Whether BOM has sent any rainfall for this gauge since startup."""
-        return station_id in self._last_rain
+        return station_id in self._last_rain or bool(self._quarters.get(station_id))
 
     # -- persistence -------------------------------------------------------
 
@@ -493,7 +500,7 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
         now = dt_util.utcnow()
         try:
             async with asyncio.timeout(UPDATE_TIMEOUT_S):
-                wl, rain, dense = await self._fetch_feeds(now)
+                wl, rain, quarters, dense = await self._fetch_feeds(now)
         except Exception as exc:  # noqa: BLE001 - every failure takes the same path
             return self._handle_failure(now, exc)
 
@@ -510,6 +517,8 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                 record = rain.latest(station_id)
                 if record is not None:
                     self._last_rain[station_id] = record
+        if quarters is not None:
+            self._ingest_quarters(quarters)
 
         if self._map_due(now):
             await self._refresh_map(now)
@@ -521,29 +530,39 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
 
     async def _fetch_feeds(
         self, now: datetime
-    ) -> tuple[A.HcsFile, A.HcsFile | None, A.HcsFile | None]:
+    ) -> tuple[A.HcsFile, A.HcsFile | None, A.HcsFile | None, A.HcsFile | None]:
         run = self.hass.async_add_executor_job
         wl_name = await run(_with_retries, _latest_name, HCS_WATER_LEVEL_PREFIX)
         wl_task = run(_with_retries, _fetch_named, wl_name, "WL")
-        rain_task = run(self._fetch_optional, HCS_RAINFALL_HOURLY_PREFIX, "RN", None)
+        # Rain files only change every 15 or 60 minutes; skip unchanged ones.
+        rain_task = run(
+            self._fetch_optional, HCS_RAINFALL_HOURLY_PREFIX, "RN", self._rain_hourly.last_name
+        )
+        quarter_task = run(
+            self._fetch_optional, HCS_RAINFALL_15MIN_PREFIX, "RN", self._rain_15min.last_name
+        )
         dense_task = run(
             self._fetch_optional, HCS_WATER_LEVEL_DENSE_PREFIX, "WL", self._dense.last_name
         )
         warn_task = run(self._fetch_warnings_safe)
-        wl, rain_result, dense_result, warnings = await asyncio.gather(
-            wl_task, rain_task, dense_task, warn_task
+        wl, rain_result, quarter_result, dense_result, warnings = await asyncio.gather(
+            wl_task, rain_task, quarter_task, dense_task, warn_task
         )
         if warnings is not None:
             self._warnings, self._warnings_ok = warnings, True
         else:
             # Keep the last list rather than silently clearing an active warning.
             self._warnings_ok = False
-        rain = rain_result[1] if rain_result else None
+        rain = quarters = None
+        if rain_result:
+            self._rain_hourly.last_name, rain = rain_result
+        if quarter_result:
+            self._rain_15min.last_name, quarters = quarter_result
         dense = None
         if dense_result:
             self._dense.last_name, dense = dense_result
             self._dense.fetched_at = now
-        return wl, rain, dense
+        return wl, rain, quarters, dense
 
     @staticmethod
     def _fetch_warnings_safe() -> list[A.FloodWarning] | None:
@@ -660,6 +679,31 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                     station_id, len(tracker.history), record.value,
                 )
 
+    def _ingest_quarters(self, quarters: A.HcsFile) -> None:
+        for station_id in self._station_ids:
+            kept = self._quarters.setdefault(station_id, {})
+            for record in quarters.records.get(station_id, []):
+                if record.value is not None and record.period_s == 900 and record.unit == "mm":
+                    kept[record.observed_at] = record.value
+            if kept:
+                newest = max(kept)
+                for when in [w for w in kept if newest - w > timedelta(hours=3)]:
+                    del kept[when]
+
+    def _rainfall(
+        self, station_id: str, now: datetime
+    ) -> tuple[A.HcsRecord | None, float | None, str | None]:
+        """Freshest last-hour rain: rolling 15-minute sum, else BOM's hourly total."""
+        hourly = A.fresh_rainfall(self._last_rain.get(station_id), now)
+        rolling, last_15 = A.rolling_hour_rainfall(
+            station_id, self._quarters.get(station_id, {}), now
+        )
+        if rolling is not None and (hourly is None or rolling.observed_at > hourly.observed_at):
+            return rolling, last_15, "15-minute"
+        if hourly is not None:
+            return hourly, last_15 if rolling is not None else None, "hourly"
+        return None, None, None
+
     def diagnostics(self, now: datetime) -> dict[str, Any]:
         """Internal state for the diagnostics download."""
         return {
@@ -667,6 +711,8 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
             "last_success": self._last_success.isoformat() if self._last_success else None,
             "consecutive_failures": self._failures,
             "dense_feed": self._dense.last_name,
+            "rain_hourly_feed": self._rain_hourly.last_name,
+            "rain_15min_feed": self._rain_15min.last_name,
             "thresholds_checked_at": (
                 self._thresholds.checked_at.isoformat() if self._thresholds.checked_at else None
             ),
@@ -704,7 +750,7 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
             )
             if station_id in self._datum_changed or meta is None:
                 status = None
-            rain = A.fresh_rainfall(self._last_rain.get(station_id), now)
+            rain, rain_15, rain_source = self._rainfall(station_id, now)
             bom_status, bom_trend = self._thresholds.bom_status.get(station_id, (None, None))
             warning, forecast = self._warning_for(meta.name if meta else None)
             readings[station_id] = StationReading(
@@ -727,6 +773,8 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                 level_shift_at=tracker.level_shift_at,
                 rainfall_mm=rain.value if rain else None,
                 rainfall_observed_at=rain.observed_at if rain else None,
+                rainfall_15min_mm=rain_15,
+                rainfall_source=rain_source,
                 bom_status=bom_status,
                 bom_trend=bom_trend,
                 feed_ok=feed_ok,

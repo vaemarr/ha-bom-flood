@@ -17,6 +17,7 @@ from custom_components.bom_flood.const import (
     CONF_STATION_META,
     CONF_STATIONS,
     DOMAIN,
+    HCS_RAINFALL_15MIN_PREFIX,
     HCS_RAINFALL_HOURLY_PREFIX,
     HCS_WATER_LEVEL_DENSE_PREFIX,
     HCS_WATER_LEVEL_PREFIX,
@@ -374,3 +375,51 @@ async def test_bom_flood_warning_for_gauge(hass, bom, freezer):
     bom.warnings.clear()
     await poll(hass, entry, freezer, NOW + timedelta(minutes=45))
     assert state(hass, f"{B}_bom_flood_warning").state == "off"
+
+
+def quarters(end: datetime, values: list[float]) -> str:
+    """15-minute rain for Logan, the last value ending at `end`."""
+    n = len(values)
+    rows = [("RN15", LOGAN, end - timedelta(minutes=15 * (n - 1 - i)), v) for i, v in enumerate(values)]
+    return hcs(rows + [("WL", "999999", end, 0.0)])
+
+
+async def test_rain_uses_rolling_15_minute_hour(hass, bom, freezer):
+    """Hourly says 1.5 mm to 09:30; 15-minute readings to 09:45 give a fresher hour."""
+    publish(bom, NOW, series(NOW, 2, 1.0, 0.0))
+    bom.publish(HCS_RAINFALL_15MIN_PREFIX, quarters(NOW - timedelta(minutes=15), [0.5, 1.0, 2.0, 4.0, 0.5]))
+    entry = await setup(hass, bom, freezer)
+    s = state(hass, f"{L}_rainfall_last_hour")
+    assert float(s.state) == 7.5  # 1.0 + 2.0 + 4.0 + 0.5
+    assert s.attributes["source"] == "15-minute"
+    assert s.attributes["last_15_min_mm"] == 0.5
+    assert s.attributes["observed_at"].startswith("2026-10-19T09:45")
+
+    # Next quarter arrives: the hour moves on without waiting for the hourly file.
+    bom.publish(HCS_RAINFALL_15MIN_PREFIX, quarters(NOW, [0.5, 1.0, 2.0, 4.0, 0.5, 3.0]))
+    await poll(hass, entry, freezer, NOW + timedelta(minutes=5))
+    assert float(state(hass, f"{L}_rainfall_last_hour").state) == 9.5
+
+
+async def test_rain_gap_in_15_minute_data_falls_back_to_hourly(hass, bom, freezer):
+    publish(bom, NOW, series(NOW, 2, 1.0, 0.0))
+    bom.publish(HCS_RAINFALL_15MIN_PREFIX, hcs([
+        ("RN15", LOGAN, NOW - timedelta(minutes=45), 1.0),
+        ("RN15", LOGAN, NOW - timedelta(minutes=15), 1.0),  # 09:30 missing
+        ("RN15", LOGAN, NOW, 1.0),
+    ]))
+    await setup(hass, bom, freezer)
+    s = state(hass, f"{L}_rainfall_last_hour")
+    assert float(s.state) == 1.5 and s.attributes["source"] == "hourly"
+    assert s.attributes["last_15_min_mm"] is None
+
+
+async def test_rain_files_only_downloaded_when_new(hass, bom, freezer):
+    publish(bom, NOW, series(NOW, 2, 1.0, 0.0))
+    bom.publish(HCS_RAINFALL_15MIN_PREFIX, quarters(NOW, [0.0] * 4))
+    entry = await setup(hass, bom, freezer)
+    await poll(hass, entry, freezer, NOW + timedelta(minutes=5))
+    rain_downloads = [n for n in bom.fetched if n.startswith(("IDZ65900", "IDZ65901"))]
+    assert len(rain_downloads) == 2  # one each, not again on the second poll
+    s = state(hass, f"{L}_rainfall_last_hour")
+    assert float(s.state) == 0.0 and s.attributes["source"] == "15-minute"
