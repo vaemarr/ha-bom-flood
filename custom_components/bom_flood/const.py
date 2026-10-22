@@ -11,6 +11,9 @@ FTP_PATH = "/anon/gen/fwo/"
 # national files are the only ones that cover every gauge offered during setup.
 HCS_WATER_LEVEL_PREFIX = "IDZ65910"
 HCS_RAINFALL_HOURLY_PREFIX = "IDZ65901"
+# Rain in 15-minute periods, published every 15 minutes. Each record covers the
+# 15 minutes up to its timestamp (checked: four sum to the hourly total).
+HCS_RAINFALL_15MIN_PREFIX = "IDZ65900"
 # Every water level reading from the last ~3 hours, published hourly. Seeds the
 # history after a restart and fills gaps between the 15-minute files.
 HCS_WATER_LEVEL_DENSE_PREFIX = "IDZ65911"

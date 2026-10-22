@@ -626,6 +626,31 @@ def fresh_rainfall(record: HcsRecord | None, now: datetime) -> HcsRecord | None:
     return record
 
 
+_QUARTER = timedelta(minutes=15)
+
+
+def rolling_hour_rainfall(
+    station_id: str, quarters: dict[datetime, float], now: datetime
+) -> tuple[HcsRecord | None, float | None]:
+    """Rain in the hour to the latest 15-minute reading, and in that last 15 minutes.
+
+    Needs all four 15-minute readings of that hour; a gap gives None rather than
+    an undercount. Too-old readings give None, as for the hourly feed.
+    """
+    if not quarters:
+        return None, None
+    end = max(quarters)
+    times = [end - _QUARTER * i for i in range(4)]
+    if not all(t in quarters for t in times):
+        return None, None
+    record = HcsRecord(
+        station_id, end, round(sum(quarters[t] for t in times), 1), "mm", "", 3600, None
+    )
+    if fresh_rainfall(record, now) is None:
+        return None, None
+    return record, quarters[end]
+
+
 # ---------------------------------------------------------------------------
 # BOM flood warnings
 # ---------------------------------------------------------------------------

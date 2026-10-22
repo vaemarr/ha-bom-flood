@@ -17,12 +17,14 @@ HEADER = (
 
 
 def hcs(rows: list[tuple[str, str, datetime, float | None]], datum: str = "LGH") -> str:
-    """rows: (sensor type, station id, observed at, value)."""
+    """rows: (sensor type, station id, observed at, value). "RN15" is 15-minute rain."""
     lines = []
     for i, (kind, sid, when, value) in enumerate(rows, start=1):
         unit, param1, param2, quality = (
-            ("metres", datum, "", 1) if kind == "WL" else ("mm", "", "3600", 3)
+            ("metres", datum, "", 1) if kind == "WL"
+            else ("mm", "", "900", 3) if kind == "RN15" else ("mm", "", "3600", 3)
         )
+        kind = "RN" if kind == "RN15" else kind
         val = "" if value is None else repr(value)
         lines.append(
             f'{i},"{kind}",1,"SR","{sid}","{when.strftime("%Y-%m-%dT%H:%M:%SZ")}",{val},'
@@ -48,6 +50,7 @@ class FakeBom:
         self.maps: dict[str, str] = {}
         self.fail_prefixes: set[str] = set()
         self.calls: list[str] = []
+        self.fetched: list[str] = []  # file names downloaded
         self.warnings: dict[str, str] = {}  # product id -> text
         self._serial = 0
 
@@ -64,6 +67,7 @@ class FakeBom:
 
     def fetch_named(self, name: str, sensor_type: str) -> A.HcsFile:
         prefix = name.split("_")[0]
+        self.fetched.append(name)
         if prefix in self.fail_prefixes:
             raise ftplib.error_temp("421 BOM unavailable")
         return A.parse_hcs(self.files[prefix], sensor_type)

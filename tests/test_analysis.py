@@ -542,3 +542,14 @@ def test_real_peak_above_and_fall_below():
 def test_real_warning_without_gauge_forecasts():
     w = _real("IDQ20795_maroochy")
     assert A.gauge_forecast(w, "Mooloolah River at Mooloolah") is None  # table only
+
+
+def test_rolling_hour_rainfall():
+    end = at(0)
+    q = {end - timedelta(minutes=15 * i): v for i, v in enumerate([0.4, 1.0, 2.0, 3.0, 9.0])}
+    record, last = A.rolling_hour_rainfall("1", q, end + timedelta(minutes=5))
+    assert record.value == 6.4 and record.observed_at == end and last == 0.4
+    assert A.rolling_hour_rainfall("1", q, end + timedelta(hours=3)) == (None, None)  # too old
+    del q[end - timedelta(minutes=30)]
+    assert A.rolling_hour_rainfall("1", q, end) == (None, None)  # gap: no undercount
+    assert A.rolling_hour_rainfall("1", {}, end) == (None, None)
