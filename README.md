@@ -131,15 +131,18 @@ Every poll:
 
 Some gauges near the coast rise and fall with the tide (Logan River at Logan Village
 swings about 0.6 m twice a day). The integration detects this itself: a 12.4-hour tide
-pattern must explain most of the movement over the last 40 hours, continuously for 12
-hours. While a tidal gauge stays within the highs and lows of the previous day (plus
-0.15 m), its trend shows *Tidal* and there is no time to next flood level or heads-up,
-because the rise is the tide coming in. Once the level goes above recent high tides, it
-is treated like any other gauge. A flood that swamps the tide also switches the tidal
-flag off. Water level attributes: `tidal`, `tide_range_m`.
+pattern must explain most of the movement over the last 40 hours, continuously for 24
+hours (two tide cycles, so a double-peaked flood isn't mistaken for a tide).
 
-Checked on the live gauges (only Logan Village is tidal) and ten years of 23 non-tidal
-SEQ gauges, including floods.
+While a tidal gauge stays within the highs and lows of the previous day (plus 0.15 m)
+and below half its minor flood level, its trend shows *Tidal* and there is no time to
+next flood level or heads-up, because the rise is the tide coming in. Above recent high
+tides, or at half of minor or more, it is treated like any other gauge. A flood that
+swamps the tide also switches the tidal flag off. Water level attributes: `tidal`,
+`tide_range_m`.
+
+Checked on the live gauges (only Logan Village is tidal) and on ten years of 23
+non-tidal SEQ gauges, including floods: no gauge was ever wrongly flagged.
 
 ### When things go wrong
 

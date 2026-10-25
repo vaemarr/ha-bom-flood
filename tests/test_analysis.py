@@ -723,13 +723,13 @@ def feed_tide(tracker, start, end, step=15, **kw):
         tracker.update_tide()
 
 
-def test_tide_detected_after_twelve_hours_of_matches():
+def test_tide_detected_after_a_day_of_matches():
     tracker = A.GaugeTracker()
     feed_tide(tracker, 0, 30 * 60)
     assert not tracker.tidal  # not enough history to fit yet
-    feed_tide(tracker, 30 * 60, 41 * 60)
-    assert not tracker.tidal and tracker.tide_since is not None  # matching, not yet for 12 h
-    feed_tide(tracker, 41 * 60, 43 * 60)
+    feed_tide(tracker, 30 * 60, 53 * 60)
+    assert not tracker.tidal and tracker.tide_since is not None  # matching, not yet for 24 h
+    feed_tide(tracker, 53 * 60, 55 * 60)
     assert tracker.tidal
     assert tracker.tide_range_m == pytest.approx(0.7, abs=0.05)
     again = A.GaugeTracker.from_dict(tracker.to_dict())
@@ -748,10 +748,10 @@ def test_river_rise_is_not_a_tide():
 
 def test_flood_swamping_tide_turns_tidal_off():
     tracker = A.GaugeTracker()
-    feed_tide(tracker, 0, 44 * 60)
+    feed_tide(tracker, 0, 56 * 60)
     assert tracker.tidal
-    for m in range(44 * 60, 84 * 60, 15):
-        h = m / 60 - 44
+    for m in range(56 * 60, 96 * 60, 15):
+        h = m / 60 - 56
         tracker.ingest(obs(m, round(tide(m) + 4.0 * (1 - math.exp(-h / 8)), 3)))
         tracker.update_tide()
     assert not tracker.tidal
@@ -759,12 +759,12 @@ def test_flood_swamping_tide_turns_tidal_off():
 
 def test_within_tide_band():
     tracker = A.GaugeTracker()
-    feed_tide(tracker, 0, 44 * 60)
-    assert tracker.within_tide(at(44 * 60))
+    feed_tide(tracker, 0, 56 * 60)
+    assert tracker.within_tide(at(56 * 60))
     lo, hi = tracker.tide_band()
     assert hi == pytest.approx(1.85, abs=0.01) and lo == pytest.approx(1.15, abs=0.01)
     level = tracker.latest.level
-    m = 44 * 60
+    m = 56 * 60
     while level <= hi + 0.3:  # the river rises above every recent high tide
         m += 15
         level += 0.1

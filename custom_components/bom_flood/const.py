@@ -162,17 +162,18 @@ HISTORY_HOURS = 40.0
 # 2026 it sent three false heads-ups). Detected from the readings: a 12.42 h
 # (+ 6.21 h) sinusoid on top of a smooth curve explains TIDE_MIN_FIT of the
 # remaining variation over the last 40 h, with a range of TIDE_MIN_RANGE_M or
-# more, continuously for TIDE_CONFIRM_HOURS. Off again as soon as the fit drops
+# more, continuously for TIDE_CONFIRM_HOURS (two tide cycles). Off again as soon as the fit drops
 # below TIDE_OFF_FIT or the range below TIDE_OFF_RANGE_M: a flood swamps the
-# tide, and the gauge is then treated like any other. One-off matches happen
-# during floods (15 of 82,589 40 h windows over ten years of 23 non-tidal SEQ
-# gauges), which is why one match is never enough. Live Logan Village matched
-# 7 of 7 windows (0.72-0.95); the other live gauges 0 of 23.
+# tide, and the gauge is then treated like any other. Double-peaked floods can
+# match for a while (ten years of 23 non-tidal SEQ gauges: 15 of 82,589 40 h
+# windows; with 12 h confirmation, 7 false tidal episodes, one at Canungra in
+# Cyclone Alfred). With 24 h: none. Live Logan Village matched 7 of 7 windows
+# (0.72-0.95); the other live gauges 0 of 23.
 TIDE_PERIOD_HOURS = 12.42
 TIDE_MIN_SPAN_HOURS = 30.0
 TIDE_MIN_FIT = 0.6
 TIDE_MIN_RANGE_M = 0.15
-TIDE_CONFIRM_HOURS = 12.0
+TIDE_CONFIRM_HOURS = 24.0
 TIDE_OFF_FIT = 0.4
 TIDE_OFF_RANGE_M = 0.1
 # While the level stays within the highs and lows of the previous day (readings

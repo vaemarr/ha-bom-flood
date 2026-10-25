@@ -38,6 +38,7 @@ from .const import (
     FTP_TIMEOUT_S,
     HCS_RAINFALL_15MIN_PREFIX,
     HEADS_UP_CONFIRM,
+    HEADS_UP_FRACTION,
     TREND_TIDAL,
     HCS_RAINFALL_HOURLY_PREFIX,
     HCS_WATER_LEVEL_DENSE_PREFIX,
@@ -845,7 +846,11 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                 unconfirmed_level=tracker.held.level if tracker.held else None,
                 unconfirmed_at=tracker.held.observed_at if tracker.held else None,
                 tidal=tracker.tidal,
-                within_tide=tracker.within_tide(now),
+                # Never below half of minor's safety margin: a false tide match
+                # in a flood must not hide anything that close to flooding.
+                within_tide=tracker.within_tide(now) and (
+                    thresholds["minor"] is None or latest.level < HEADS_UP_FRACTION * thresholds["minor"]
+                ),
                 tide_range_m=tracker.tide_range_m,
             )
         return readings
