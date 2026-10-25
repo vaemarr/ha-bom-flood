@@ -37,6 +37,7 @@ from .const import (
     FTP_PATH,
     FTP_TIMEOUT_S,
     HCS_RAINFALL_15MIN_PREFIX,
+    HEADS_UP_CONFIRM,
     HCS_RAINFALL_HOURLY_PREFIX,
     HCS_WATER_LEVEL_DENSE_PREFIX,
     HCS_WATER_LEVEL_PREFIX,
@@ -179,7 +180,15 @@ class StationReading:
     feed_ok: bool = True
     warning: A.FloodWarning | None = None
     forecast: A.GaugeForecast | None = None
+    warning_match: str | None = None  # "gauge" or "river"
+    watch: A.FloodWarning | None = None
     warnings_ok: bool | None = None
+    # The reading before the latest one, for confirming a heads-up.
+    prev_level: float | None = None
+    prev_rate_m_per_h: float | None = None
+    # A big jump held back until the next reading confirms it.
+    unconfirmed_level: float | None = None
+    unconfirmed_at: datetime | None = None
 
     # Time-dependent values are derived on read, so a reading displayed long
     # after it was fetched (a hung or failing feed) still ages honestly.
@@ -208,6 +217,21 @@ class StationReading:
             name: A.hours_to_level(self.level, rate, self.thresholds.get(name))
             for name in LEVEL_KEYS
         }
+
+    def heads_up_h(self, now: datetime) -> float | None:
+        """Hours to minor flood if a heads-up is due, else None.
+
+        Due when both the latest reading and the one before it qualify
+        (HEADS_UP_CONFIRM = 2): close to minor in straight-line time and
+        already at least half way to it. Never while the reading is out of date.
+        """
+        minor = self.thresholds.get("minor")
+        latest = A.heads_up_hours(self.level, self.rate(now), minor)
+        if latest is None:
+            return None
+        if HEADS_UP_CONFIRM > 1 and A.heads_up_hours(self.prev_level, self.prev_rate_m_per_h, minor) is None:
+            return None
+        return latest
 
     def earliest_to(self, now: datetime) -> dict[str, float | None]:
         """Earliest likely hours to each level (calibrated, conservative)."""
@@ -506,12 +530,25 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
 
         if self._failures:
             _LOGGER.info("BOM water level feed is reachable again")
+        polled_recently = (
+            self._failures == 0
+            and self._last_success is not None
+            and now - self._last_success <= 2 * (self.update_interval or timedelta(minutes=30))
+        )
         self._failures = 0
         self._last_success = now
 
+        before = {sid: t.latest for sid, t in self._trackers.items()}
         if dense is not None:
             self._ingest_dense(dense)
         self._ingest_latest(wl)
+        if polled_recently:
+            # Learn how late each gauge's readings normally turn up; only
+            # across back-to-back polls, so downtime is not mistaken for delay.
+            for sid, previous in before.items():
+                latest = self._trackers[sid].latest
+                if previous is not None and latest is not None and latest.observed_at > previous.observed_at:
+                    self._trackers[sid].note_arrival(previous, now)
         if rain is not None:
             for station_id in self._station_ids:
                 record = rain.latest(station_id)
@@ -724,6 +761,8 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                     "datum": t.datum,
                     "cadence_h": t.cadence_hours(),
                     "stale_after_h": t.stale_after_hours(),
+                    "arrival_ages_h": list(t.arrival_ages),
+                    "held": [t.held.observed_at.isoformat(), t.held.level] if t.held else None,
                     "rate": vars(r) if (r := t.rate()) else None,
                     "level_shift_at": t.level_shift_at.isoformat() if t.level_shift_at else None,
                     "meta": m.to_dict() | {"source": m.thresholds_source} if (m := self.station_meta(station_id)) else None,
@@ -745,6 +784,8 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
             meta = self.station_meta(station_id)
             thresholds = meta.thresholds() if meta else {"minor": None, "moderate": None, "major": None}
             rate = tracker.rate()
+            prev = tracker.history[-2] if len(tracker.history) > 1 else None
+            prev_rate = tracker.rate(-2) if prev else None
             status = A.derive_flood_status(
                 latest.level, thresholds["minor"], thresholds["moderate"], thresholds["major"]
             )
@@ -752,7 +793,8 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                 status = None
             rain, rain_15, rain_source = self._rainfall(station_id, now)
             bom_status, bom_trend = self._thresholds.bom_status.get(station_id, (None, None))
-            warning, forecast = self._warning_for(meta.name if meta else None)
+            warning, forecast, warning_match = self._warning_for(meta.name if meta else None)
+            watch = self._watch_for(meta.name if meta else None)
             readings[station_id] = StationReading(
                 station_id=station_id,
                 name=meta.name if meta else station_id,
@@ -780,30 +822,63 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                 feed_ok=feed_ok,
                 warning=warning,
                 forecast=forecast,
+                warning_match=warning_match,
+                watch=watch,
                 warnings_ok=self._warnings_ok,
+                prev_level=prev.level if prev else None,
+                prev_rate_m_per_h=prev_rate.rate_m_per_h if prev_rate else None,
+                unconfirmed_level=tracker.held.level if tracker.held else None,
+                unconfirmed_at=tracker.held.observed_at if tracker.held else None,
             )
         return readings
 
+    def _same_state(self, warning: A.FloodWarning) -> bool:
+        """Products are per state (IDQ..., IDN...); so are the configured gauges."""
+        return len(self._region) > 2 and warning.product_id[:3].upper() == self._region[:3].upper()
+
     def _warning_for(
         self, gauge_name: str | None
-    ) -> tuple[A.FloodWarning | None, A.GaugeForecast | None]:
-        """The most severe current warning that names this gauge."""
+    ) -> tuple[A.FloodWarning | None, A.GaugeForecast | None, str | None]:
+        """The most relevant current warning for this gauge, and how it matched.
+
+        "gauge": BOM names this gauge (and may forecast it). "river": the
+        warning's title names the gauge's river but not the gauge itself; most
+        gauges are not BOM forecast locations. Watches are handled separately.
+        """
         if not gauge_name:
-            return None, None
+            return None, None, None
         rank = {"major": 3, "moderate": 2, "minor": 1}
-        best: tuple[int, A.FloodWarning, A.GaugeForecast] | None = None
+        best: tuple[int, A.FloodWarning, A.GaugeForecast | None, str] | None = None
         for warning in self._warnings:
+            if warning.watch:
+                continue
             forecast = A.gauge_forecast(warning, gauge_name)
-            if forecast is None:
+            if forecast is not None:
+                match = "gauge"
+            elif self._same_state(warning) and A.warning_names_river(warning, gauge_name):
+                match = "river"
+            else:
                 continue
             score = (
-                (not warning.final) * 100
+                (not warning.final) * 1000
+                + (match == "gauge") * 100
                 + rank.get(warning.severity or "", 0) * 10
-                + (forecast.level_m is not None)
+                + (forecast is not None and forecast.level_m is not None)
             )
             if best is None or score > best[0]:
-                best = (score, warning, forecast)
-        return (best[1], best[2]) if best else (None, None)
+                best = (score, warning, forecast, match)
+        return (best[1], best[2], best[3]) if best else (None, None, None)
+
+    def _watch_for(self, gauge_name: str | None) -> A.FloodWarning | None:
+        """A current Flood Watch listing this gauge's river or the gauge."""
+        if not gauge_name:
+            return None
+        for warning in self._warnings:
+            if warning.watch and self._same_state(warning) and (
+                A.watch_covers_river(warning, gauge_name) or A.gauge_forecast(warning, gauge_name)
+            ):
+                return warning
+        return None
 
     def _log_gaps(self, now: datetime, readings: dict[str, StationReading]) -> None:
         missing = sorted(set(self._station_ids) - set(readings))

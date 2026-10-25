@@ -54,6 +54,9 @@ def _level_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
         "moderate_flood_level_m": r.thresholds.get("moderate"),
         "major_flood_level_m": r.thresholds.get("major"),
         "rejected_reading": r.rejected_reading,
+        # A big jump waiting for the next reading before it is shown.
+        "unconfirmed_reading": r.unconfirmed_level,
+        "unconfirmed_at": _iso(r.unconfirmed_at),
         "level_shift_at": _iso(r.level_shift_at),
         "quality": r.quality,
         "latitude": r.lat,
@@ -99,6 +102,7 @@ def _next_level_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
         "time_to_moderate_h": hours["moderate"],
         "time_to_major_h": hours["major"],
         "rate_m_per_h": r.rate(now),
+        "heads_up": r.heads_up_h(now) is not None,
         "method": "earliest likely time, calibrated on past floods; not a BOM forecast",
     }
 
