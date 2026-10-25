@@ -37,6 +37,7 @@ from .const import (
     FTP_PATH,
     FTP_TIMEOUT_S,
     HCS_RAINFALL_15MIN_PREFIX,
+    HEADS_UP_CONFIRM,
     HCS_RAINFALL_HOURLY_PREFIX,
     HCS_WATER_LEVEL_DENSE_PREFIX,
     HCS_WATER_LEVEL_PREFIX,
@@ -180,6 +181,12 @@ class StationReading:
     warning: A.FloodWarning | None = None
     forecast: A.GaugeForecast | None = None
     warnings_ok: bool | None = None
+    # The reading before the latest one, for confirming a heads-up.
+    prev_level: float | None = None
+    prev_rate_m_per_h: float | None = None
+    # A big jump held back until the next reading confirms it.
+    unconfirmed_level: float | None = None
+    unconfirmed_at: datetime | None = None
 
     # Time-dependent values are derived on read, so a reading displayed long
     # after it was fetched (a hung or failing feed) still ages honestly.
@@ -208,6 +215,21 @@ class StationReading:
             name: A.hours_to_level(self.level, rate, self.thresholds.get(name))
             for name in LEVEL_KEYS
         }
+
+    def heads_up_h(self, now: datetime) -> float | None:
+        """Hours to minor flood if a heads-up is due, else None.
+
+        Due when both the latest reading and the one before it qualify
+        (HEADS_UP_CONFIRM = 2): close to minor in straight-line time and
+        already at least half way to it. Never while the reading is out of date.
+        """
+        minor = self.thresholds.get("minor")
+        latest = A.heads_up_hours(self.level, self.rate(now), minor)
+        if latest is None:
+            return None
+        if HEADS_UP_CONFIRM > 1 and A.heads_up_hours(self.prev_level, self.prev_rate_m_per_h, minor) is None:
+            return None
+        return latest
 
     def earliest_to(self, now: datetime) -> dict[str, float | None]:
         """Earliest likely hours to each level (calibrated, conservative)."""
@@ -506,12 +528,25 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
 
         if self._failures:
             _LOGGER.info("BOM water level feed is reachable again")
+        polled_recently = (
+            self._failures == 0
+            and self._last_success is not None
+            and now - self._last_success <= 2 * (self.update_interval or timedelta(minutes=30))
+        )
         self._failures = 0
         self._last_success = now
 
+        before = {sid: t.latest for sid, t in self._trackers.items()}
         if dense is not None:
             self._ingest_dense(dense)
         self._ingest_latest(wl)
+        if polled_recently:
+            # Learn how late each gauge's readings normally turn up; only
+            # across back-to-back polls, so downtime is not mistaken for delay.
+            for sid, previous in before.items():
+                latest = self._trackers[sid].latest
+                if previous is not None and latest is not None and latest.observed_at > previous.observed_at:
+                    self._trackers[sid].note_arrival(previous, now)
         if rain is not None:
             for station_id in self._station_ids:
                 record = rain.latest(station_id)
@@ -724,6 +759,8 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                     "datum": t.datum,
                     "cadence_h": t.cadence_hours(),
                     "stale_after_h": t.stale_after_hours(),
+                    "arrival_ages_h": list(t.arrival_ages),
+                    "held": [t.held.observed_at.isoformat(), t.held.level] if t.held else None,
                     "rate": vars(r) if (r := t.rate()) else None,
                     "level_shift_at": t.level_shift_at.isoformat() if t.level_shift_at else None,
                     "meta": m.to_dict() | {"source": m.thresholds_source} if (m := self.station_meta(station_id)) else None,
@@ -745,6 +782,8 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
             meta = self.station_meta(station_id)
             thresholds = meta.thresholds() if meta else {"minor": None, "moderate": None, "major": None}
             rate = tracker.rate()
+            prev = tracker.history[-2] if len(tracker.history) > 1 else None
+            prev_rate = tracker.rate(-2) if prev else None
             status = A.derive_flood_status(
                 latest.level, thresholds["minor"], thresholds["moderate"], thresholds["major"]
             )
@@ -781,6 +820,10 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                 warning=warning,
                 forecast=forecast,
                 warnings_ok=self._warnings_ok,
+                prev_level=prev.level if prev else None,
+                prev_rate_m_per_h=prev_rate.rate_m_per_h if prev_rate else None,
+                unconfirmed_level=tracker.held.level if tracker.held else None,
+                unconfirmed_at=tracker.held.observed_at if tracker.held else None,
             )
         return readings
 

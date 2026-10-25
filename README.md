@@ -21,6 +21,7 @@ Each gauge you pick becomes a device with these entities:
 | **Trend** | `Rising` | Rising, Steady or Falling, from the last hour of readings |
 | **Rate of rise** | `+0.35 m/h` | How fast the level is changing |
 | **Time to next flood level** | `1.1 h` | The **earliest likely** time the next flood level is reached, while the river is rising (see [accuracy](#how-accurate-is-it)) |
+| **Flood heads-up** | `On` | This gauge could reach minor flood within about 4 hours: straight-line time to minor of 4 h or less, level already at least half of minor, on two readings in a row. Not a BOM forecast. Attribute `hours_to_minor` |
 | **BOM flood warning** | `On` | A current official BOM flood warning names this gauge; attributes carry the title, BOM's forecast level and timing, and a link |
 | **Last reading** | `12 minutes ago` | When BOM observed the level shown |
 | **Reading out of date** | `On` | The gauge has stopped reporting. Don't trust the level as current |
@@ -108,11 +109,18 @@ Every poll:
    example -26 m on a gauge sitting at 0.9 m) is held back and the last good reading
    kept. Rises get generous limits (10 m in the first hour), because flash floods are
    real. If three separate readings agree on a new level, it is accepted as genuine.
+   A single big jump (over 0.5 m from where the river was heading) waits for the next
+   reading: if that one stays up the jump is shown, if it falls back the jump is dropped.
+   BOM occasionally publishes one wild value (1.80 → 2.65 → 1.80 m). Replayed over ten
+   years of 23 SEQ gauges, this dropped 12 such readings and no flood data. The held
+   value shows on Water level as `unconfirmed_reading`.
 3. **Measure the trend** with a robust slope over the last hour of readings (widened for
    gauges that report every few hours), so one bad sample can't fake a rise.
 4. **Classify** the level against BOM's flood levels, the same way BOM's maps do.
-5. **Check freshness.** Each gauge's normal reporting interval is learnt; three missed
-   reports (minimum one hour) marks it out of date. Rate, trend and projections are then
+5. **Check freshness.** For each gauge the integration learns how old the newest reading
+   usually is when BOM publishes the next one (many gauges are published hourly, about 45
+   minutes late). It is out of date at 1.5 times that, minimum one hour, maximum six.
+   Until it has seen three publications, three missed reports (minimum one hour) is used. Rate, trend and projections are then
    withheld, because a rate from hours ago says nothing about the river now.
 
 ### When things go wrong
@@ -123,6 +131,7 @@ Every poll:
 | BOM unreachable for over 6 hours | Entities unavailable |
 | Gauge stops reporting | Level stays (it's still the last thing BOM published); *Reading out of date* on; rate, trend and time to next level go unknown |
 | BOM publishes an impossible value | Ignored; `rejected_reading` attribute on Water level shows it |
+| BOM publishes one wild value | Held until the next reading; dropped if not confirmed (`unconfirmed_reading`) |
 | Gauge changes datum (gauge height ↔ AHD) | History restarts; flood status is withheld until BOM's map shows the gauge on the new datum |
 | BOM revises a flood level | Picked up within an hour; logged |
 

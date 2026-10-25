@@ -190,9 +190,38 @@ DATUM_AGREEMENT_M = 0.5
 # keeps being displayed as though it were current. Staleness is judged against
 # each gauge's own cadence, since BOM gauges report anywhere from every few
 # minutes to every few hours.
+#
+# Cadence alone misleads: during rain a gauge may log a reading every few
+# minutes while BOM still publishes once an hour, ~45 min late (Coomera at
+# Canungra, Oct 2026: flagged out of date for half of every hour). So once a
+# few publications have been seen, the limit is STALE_ARRIVAL_MULTIPLIER x the
+# usual age of the newest reading just before the next one turns up.
 STALE_CADENCE_MULTIPLIER = 3
 STALE_MIN_HOURS = 1.0
 STALE_FALLBACK_HOURS = 3.0
+STALE_ARRIVAL_MULTIPLIER = 1.5
+STALE_ARRIVAL_SAMPLES = 12  # publications remembered
+STALE_ARRIVAL_MIN_SAMPLES = 3
+# Cap, so a feed that has died is noticed within this long even on a gauge
+# that normally reports only every few hours.
+STALE_MAX_HOURS = 6.0
+
+# A single reading that jumps more than this (per hour elapsed, at least this
+# much) is held back until the next reading confirms it. BOM occasionally
+# publishes one wild value (Albert River at Wolffdene 1.80 -> 2.65 -> 1.80 m;
+# Cedar Creek at Plunkett Road 4.35 m against a real peak of 1.05 m, Oct 2026).
+# A real rise is confirmed by the next reading, so the cost is one reading.
+SPIKE_HOLD_M = 0.5
+
+# Heads-up: a gauge may reach minor flood soon. Straight-line time to minor
+# within HEADS_UP_HOURS, level already HEADS_UP_FRACTION of minor or more, on
+# HEADS_UP_CONFIRM consecutive readings. Backtest, 23 SEQ gauges 2016-2026, 258
+# minor floods: 94% warned, median 2.2 h ahead, ~1.5 false alerts per
+# gauge-year (the earlier "earliest likely <= 3 h" rule: ~5.9). The fraction
+# also stops tides at Logan Village and small rises far below minor.
+HEADS_UP_HOURS = 4.0
+HEADS_UP_FRACTION = 0.5
+HEADS_UP_CONFIRM = 2
 
 # An "hourly rainfall" value older than this is not shown as current.
 RAINFALL_MAX_AGE_HOURS = 2.0

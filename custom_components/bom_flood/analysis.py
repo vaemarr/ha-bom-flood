@@ -21,6 +21,8 @@ from .const import (
     DATUM_SHIFT_SAMPLES,
     EARLIEST_BAND_MIDPOINTS_H,
     EARLIEST_FACTORS,
+    HEADS_UP_FRACTION,
+    HEADS_UP_HOURS,
     FLOOD_STATUS_BELOW,
     FLOOD_STATUS_MAJOR,
     FLOOD_STATUS_MINOR,
@@ -32,13 +34,18 @@ from .const import (
     MAX_STEP_HOURS,
     MIN_STEP_HOURS,
     PROJECTION_HORIZON_HOURS,
+    SPIKE_HOLD_M,
     RAINFALL_MAX_AGE_HOURS,
     RATE_HISTORY_HOURS,
     RATE_MIN_SPAN_HOURS,
     RATE_WINDOW_HOURS,
     RATE_WINDOW_MAX_HOURS,
+    STALE_ARRIVAL_MIN_SAMPLES,
+    STALE_ARRIVAL_MULTIPLIER,
+    STALE_ARRIVAL_SAMPLES,
     STALE_CADENCE_MULTIPLIER,
     STALE_FALLBACK_HOURS,
+    STALE_MAX_HOURS,
     STALE_MIN_HOURS,
     TREND_FALLING,
     TREND_RISING,
@@ -318,6 +325,14 @@ def hours_to_level(level: float | None, rate: float | None, threshold: float | N
     return round(hours, 1)
 
 
+def heads_up_hours(level: float | None, rate: float | None, minor: float | None) -> float | None:
+    """Straight-line hours to minor flood, if this reading alone qualifies for a heads-up."""
+    if level is None or minor is None or minor <= 0 or level < HEADS_UP_FRACTION * minor:
+        return None
+    hours = hours_to_level(level, rate, minor)
+    return hours if hours is not None and hours <= HEADS_UP_HOURS else None
+
+
 def earliest_hours(projected: float | None) -> float | None:
     """Earliest likely hours to a level, from the straight-line projection.
 
@@ -389,11 +404,33 @@ def plausible_step(previous: Observation, current: Observation) -> bool:
     return abs(change) <= allowed
 
 
+def is_jump(previous: Observation, current: Observation, slope: float = 0.0) -> bool:
+    """A change big enough that one reading alone should not be believed.
+
+    Measured from where the river was already heading (`slope`, m/h, from the
+    step before), so a steady fast rise is not held back reading after reading.
+    """
+    elapsed = max(_hours(previous.observed_at, current.observed_at), 0.0)
+    expected = previous.level + slope * min(elapsed, 1.0)
+    return abs(current.level - expected) > SPIKE_HOLD_M * max(1.0, elapsed)
+
+
+def confirms(before: Observation, held: Observation, after: Observation) -> bool:
+    """Does `after` back up the jump from `before` to `held`?
+
+    It does when it stays past the halfway point in the direction of the jump:
+    a real rise keeps going or stays up, a bad reading falls straight back.
+    """
+    jump = held.level - before.level
+    return (after.level - before.level) * (1 if jump >= 0 else -1) >= abs(jump) / 2
+
+
 @dataclass
 class IngestResult:
     accepted: bool
     rejected_level: float | None = None
     level_shift: bool = False
+    held: bool = False
 
 
 @dataclass
@@ -417,6 +454,10 @@ class GaugeTracker:
     pending: list[Observation] = field(default_factory=list)
     datum: str | None = None
     level_shift_at: datetime | None = None
+    # A big jump waiting for the next reading to confirm it.
+    held: Observation | None = None
+    # Age (h) of the newest reading just before each new one was published.
+    arrival_ages: list[float] = field(default_factory=list)
 
     # -- ingestion ---------------------------------------------------------
 
@@ -430,6 +471,12 @@ class GaugeTracker:
         if obs.observed_at < last.observed_at:
             return self._backfill(obs)
 
+        if self.held is not None and obs.observed_at > last.observed_at:
+            result = self._resolve_held(last, obs)
+            if result is not None:
+                return result
+            last = self.history[-1]
+
         if obs.observed_at == last.observed_at:
             if obs.level == last.level:
                 return IngestResult(accepted=True)
@@ -441,6 +488,9 @@ class GaugeTracker:
             return IngestResult(accepted=False, rejected_level=obs.level)
 
         if plausible_step(last, obs):
+            if is_jump(last, obs, self._last_slope()):
+                self.held = obs
+                return IngestResult(accepted=False, held=True)
             self.history.append(obs)
             self.pending.clear()
             self._trim()
@@ -463,6 +513,44 @@ class GaugeTracker:
             return IngestResult(accepted=True, level_shift=True)
         return IngestResult(accepted=False, rejected_level=obs.level)
 
+    def _last_slope(self) -> float:
+        """Recent rate (m/h): latest reading against one at least MIN_STEP_HOURS older.
+
+        Gauges logging every minute or two jitter by tenths of a metre; a slope
+        between two such readings is noise, not where the river is heading.
+        """
+        if len(self.history) < 2:
+            return 0.0
+        b = self.history[-1]
+        a = next(
+            (o for o in reversed(self.history[:-1]) if _hours(o.observed_at, b.observed_at) >= MIN_STEP_HOURS),
+            None,
+        )
+        if a is None:
+            return 0.0
+        return (b.level - a.level) / _hours(a.observed_at, b.observed_at)
+
+    def _resolve_held(self, last: Observation, obs: Observation) -> IngestResult | None:
+        """Settle a held jump using the reading after it.
+
+        Returns a result when `obs` was dealt with here, or None to judge `obs`
+        normally against the (possibly updated) last good reading.
+        """
+        held = self.held
+        assert held is not None
+        if obs.observed_at == held.observed_at:
+            self.held = obs  # same reading again, or BOM revised it
+            return IngestResult(accepted=False, held=True)
+        if obs.observed_at < held.observed_at:
+            return None
+        self.held = None
+        if confirms(last, held, obs) and plausible_step(held, obs):
+            self.history.extend([held, obs])
+            self.pending.clear()
+            self._trim()
+            return IngestResult(accepted=True)
+        return None  # a one-off: forget it and judge obs against `last`
+
     def _backfill(self, obs: Observation) -> IngestResult:
         """Insert an older reading only if it fits its neighbours."""
         if any(o.observed_at == obs.observed_at for o in self.history):
@@ -475,6 +563,8 @@ class GaugeTracker:
             return IngestResult(accepted=False)
         if after and not plausible_step(obs, after[0]):
             return IngestResult(accepted=False)
+        if before and after and is_jump(before[-1], obs) and not confirms(before[-1], obs, after[0]):
+            return IngestResult(accepted=False)
         self.history = before + [obs] + after
         return IngestResult(accepted=True)
 
@@ -486,6 +576,13 @@ class GaugeTracker:
         self.history.clear()
         self.pending.clear()
         self.level_shift_at = None
+        self.held = None
+
+    def note_arrival(self, previous: Observation, now: datetime) -> None:
+        """Record that a newer reading than `previous` was published by `now`."""
+        age = _hours(previous.observed_at, now)
+        if 0 < age <= 2 * STALE_MAX_HOURS:
+            self.arrival_ages = (self.arrival_ages + [round(age, 3)])[-STALE_ARRIVAL_SAMPLES:]
 
     # -- derived values ----------------------------------------------------
 
@@ -504,10 +601,14 @@ class GaugeTracker:
         return median(gaps)
 
     def stale_after_hours(self) -> float:
+        """How old the newest reading may get before it is called out of date."""
+        if len(self.arrival_ages) >= STALE_ARRIVAL_MIN_SAMPLES:
+            usual = median(self.arrival_ages)
+            return min(STALE_MAX_HOURS, max(STALE_MIN_HOURS, STALE_ARRIVAL_MULTIPLIER * usual))
         cadence = self.cadence_hours()
         if cadence is None:
             return STALE_FALLBACK_HOURS
-        return max(STALE_MIN_HOURS, STALE_CADENCE_MULTIPLIER * cadence)
+        return min(STALE_MAX_HOURS, max(STALE_MIN_HOURS, STALE_CADENCE_MULTIPLIER * cadence))
 
     def is_stale(self, now: datetime) -> bool:
         latest = self.latest
@@ -515,17 +616,20 @@ class GaugeTracker:
             return True
         return _hours(latest.observed_at, now) > self.stale_after_hours()
 
-    def rate(self) -> RateResult | None:
+    def rate(self, end: int = -1) -> RateResult | None:
         """Rate of change (m/h) ending at the latest accepted reading.
+
+        `end` picks an earlier reading to end at instead (-2: the one before).
 
         A robust (Theil-Sen) slope over the last RATE_WINDOW_HOURS, widened up to
         a few reporting intervals for slow gauges, and only once the readings
         span RATE_MIN_SPAN_HOURS: a rate from readings minutes apart is mostly
         gauge noise, and this number drives flood projections.
         """
-        latest = self.latest
-        if latest is None:
+        if len(self.history) < -end:
             return None
+        history = self.history[: len(self.history) + end + 1]
+        latest = history[-1]
         cadence = self.cadence_hours()
         max_window = RATE_WINDOW_MAX_HOURS
         if cadence is not None:
@@ -534,7 +638,7 @@ class GaugeTracker:
         window = RATE_WINDOW_HOURS
         while True:
             points = [
-                o for o in self.history
+                o for o in history
                 if _hours(o.observed_at, latest.observed_at) <= window + 1e-9
             ]
             span = _hours(points[0].observed_at, latest.observed_at)
@@ -561,6 +665,7 @@ class GaugeTracker:
         return {
             "observations": [[o.observed_at.isoformat(), o.level] for o in self.history],
             "datum": self.datum,
+            "arrival_ages": list(self.arrival_ages),
         }
 
     @classmethod
@@ -591,6 +696,12 @@ class GaugeTracker:
             if observed_at is not None and level is not None:
                 raw.append(Observation(observed_at, level))
         tracker.history = screen_series(raw)
+        ages = data.get("arrival_ages")
+        if isinstance(ages, list):
+            tracker.arrival_ages = [
+                float(a) for a in ages
+                if isinstance(a, (int, float)) and not isinstance(a, bool) and 0 < a <= 2 * STALE_MAX_HOURS
+            ][-STALE_ARRIVAL_SAMPLES:]
         datum = data.get("datum")
         tracker.datum = datum if isinstance(datum, str) else None
         return tracker
@@ -609,7 +720,19 @@ def screen_series(observations: Iterable[Observation]) -> list[Observation]:
                 kept.append(obs)
         if len(kept) > len(best):
             best = kept
-    return best
+    return drop_spikes(best)
+
+
+def drop_spikes(series: list[Observation]) -> list[Observation]:
+    """Remove single readings that jump away and straight back."""
+    out = list(series[:1])
+    for i in range(1, len(series)):
+        obs = series[i]
+        nxt = series[i + 1] if i + 1 < len(series) else None
+        if nxt is not None and is_jump(out[-1], obs) and not confirms(out[-1], obs, nxt):
+            continue
+        out.append(obs)
+    return out
 
 
 # ---------------------------------------------------------------------------
