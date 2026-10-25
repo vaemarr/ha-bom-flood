@@ -15,7 +15,14 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import FLOOD_STATUS_MAJOR, FLOOD_STATUS_MINOR, FLOOD_STATUS_MODERATE
+from .const import (
+    FLOOD_STATUS_MAJOR,
+    FLOOD_STATUS_MINOR,
+    FLOOD_STATUS_MODERATE,
+    HEADS_UP_CONFIRM,
+    HEADS_UP_FRACTION,
+    HEADS_UP_HOURS,
+)
 from .coordinator import BomFloodCoordinator, StationReading
 from .entity import BomFloodEntity
 
@@ -42,13 +49,32 @@ def _warning_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
     return {
         "title": w.title if w else None,
         "issued": w.issued if w else None,
+        "final": w.final if w else None,
         "url": w.url if w else None,
         "forecast_level_m": f.level_m if f else None,
         "forecast_class": f.flood_class if f else None,
         "forecast_when": f.when if f else None,
         "forecast_direction": f.direction if f else None,
         "bom_says": " ".join(f.sentences)[:600] if f else None,
+        # "gauge": BOM names this gauge. "river": the warning covers this
+        # gauge's river but does not mention the gauge itself.
+        "match": r.warning_match,
+        "watch_title": r.watch.title if r.watch else None,
+        "watch_issued": r.watch.issued if r.watch else None,
+        "watch_url": r.watch.url if r.watch else None,
         "warnings_checked": r.warnings_ok,
+    }
+
+
+def _heads_up_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
+    return {
+        "hours_to_minor": r.heads_up_h(now),
+        "level_m": r.level,
+        "minor_flood_level_m": r.thresholds.get("minor"),
+        "rule": (
+            f"straight-line time to minor within {HEADS_UP_HOURS:g} h and level at least "
+            f"{HEADS_UP_FRACTION:.0%} of minor, on {HEADS_UP_CONFIRM} readings in a row; not a BOM forecast"
+        ),
     }
 
 
@@ -62,8 +88,19 @@ BINARY_SENSORS: tuple[BomBinaryDescription, ...] = (
     BomBinaryDescription(
         key="bom_warning",
         device_class=BinarySensorDeviceClass.SAFETY,
-        is_on_fn=lambda r, now: (r.warning is not None) if r.warnings_ok is not None else None,
+        # A "Final" warning is BOM's all clear, so it does not turn this on.
+        is_on_fn=lambda r, now: (
+            (r.warning is not None and not r.warning.final) if r.warnings_ok is not None else None
+        ),
         attrs_fn=_warning_attrs,
+    ),
+    BomBinaryDescription(
+        key="heads_up",
+        device_class=BinarySensorDeviceClass.SAFETY,
+        is_on_fn=lambda r, now: (
+            r.heads_up_h(now) is not None if r.thresholds.get("minor") is not None else None
+        ),
+        attrs_fn=_heads_up_attrs,
     ),
     BomBinaryDescription(
         key="flooding",

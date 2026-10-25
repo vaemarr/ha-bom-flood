@@ -423,3 +423,142 @@ async def test_rain_files_only_downloaded_when_new(hass, bom, freezer):
     assert len(rain_downloads) == 2  # one each, not again on the second poll
     s = state(hass, f"{L}_rainfall_last_hour")
     assert float(s.state) == 0.0 and s.attributes["source"] == "15-minute"
+
+
+async def test_final_warning_is_all_clear(hass, bom, freezer):
+    import pathlib
+
+    text = (pathlib.Path(__file__).parent / "fixtures" / "IDQ20885.txt").read_text()
+    final = text.replace("Major Flood Warning for the Logan", "Final Flood Warning for the Logan")
+    publish(bom, NOW, series(NOW, 2, 1.0, 0.0))
+    bom.warnings["IDQ20885"] = final
+    await setup(hass, bom, freezer)
+    s = state(hass, f"{B}_bom_flood_warning")
+    assert s.state == "off"
+    assert s.attributes["final"] is True and s.attributes["title"].startswith("Final")
+
+
+async def test_heads_up_needs_two_qualifying_readings(hass, bom, freezer):
+    """Minor 2.0 m. Rising 0.3 m/h: on once two readings are both >= 1.0 m and <= 4 h out."""
+    logan = series(NOW, 2, 0.4, 0.3)  # ends at 1.0 m; the reading before is 0.925 m
+    publish(bom, NOW, logan)
+    entry = await setup(hass, bom, freezer)
+    assert state(hass, f"{B}_flood_heads_up").state == "off"
+
+    later = NOW + timedelta(minutes=15)
+    publish(bom, later, logan + [(later, 1.075)])
+    await poll(hass, entry, freezer, later)
+    s = state(hass, f"{B}_flood_heads_up")
+    assert s.state == "on"
+    assert s.attributes["hours_to_minor"] == pytest.approx((2.0 - 1.075) / 0.3, abs=0.1)
+    assert state(hass, f"{L}_time_to_next_flood_level").attributes["heads_up"] is True
+    # No flood levels: unknown, not "no heads-up".
+    assert state(hass, "binary_sensor.slacks_creek_flood_heads_up").state == STATE_UNKNOWN
+
+
+async def test_heads_up_ignores_rise_far_below_minor(hass, bom, freezer):
+    """Logan Village tides: 0.5 m/h towards a 2 m minor from 0.6 m is ~3 h, but only 30% of minor."""
+    publish(bom, NOW, series(NOW, 2, -0.4, 0.5))  # ends at 0.6 m
+    await setup(hass, bom, freezer)
+    assert state(hass, f"{L}_time_to_next_flood_level").attributes["time_to_minor_h"] <= 4
+    assert state(hass, f"{B}_flood_heads_up").state == "off"
+
+
+async def test_spike_held_until_next_reading(hass, bom, freezer):
+    """Wolffdene, Oct 2026: 1.80 -> 2.65 -> 1.80 m must never show 2.65 m."""
+    steady = series(NOW, 2, 1.8, 0.0)
+    publish(bom, NOW, steady)
+    entry = await setup(hass, bom, freezer)
+
+    t1 = NOW + timedelta(minutes=15)
+    publish(bom, t1, steady + [(t1, 2.65)])
+    await poll(hass, entry, freezer, t1)
+    level = state(hass, f"{L}_water_level")
+    assert float(level.state) == 1.8
+    assert level.attributes["unconfirmed_reading"] == 2.65
+
+    t2 = t1 + timedelta(minutes=15)
+    publish(bom, t2, steady + [(t1, 2.65), (t2, 1.8)])
+    await poll(hass, entry, freezer, t2)
+    level = state(hass, f"{L}_water_level")
+    assert float(level.state) == 1.8
+    assert level.attributes["unconfirmed_reading"] is None
+    assert level.attributes["observed_at"] == t2.isoformat()
+
+
+async def test_stale_limit_learns_publication_delay(hass, bom, freezer):
+    """Canungra: readings every 5 min, published hourly at :45 up to :00. Must stop flapping."""
+    def upto(end):
+        return series(end, 3, 1.0, 0.0, step_min=5)
+
+    publish(bom, NOW, upto(NOW - timedelta(minutes=45)))
+    entry = await setup(hass, bom, freezer)
+    assert state(hass, f"{B}_reading_out_of_date").attributes["stale_after_min"] == 60
+
+    now, flags = NOW, []
+    for _ in range(5 * 4):  # five hours of 15-minute polls
+        now += timedelta(minutes=15)
+        if now.minute == 45:
+            publish(bom, now, upto(now.replace(minute=0)))
+        await poll(hass, entry, freezer, now)
+        flags.append((now, state(hass, f"{B}_reading_out_of_date").state))
+    # Usual age before the next batch is 1 h 45 min, so the limit becomes 1.5x that.
+    assert state(hass, f"{B}_reading_out_of_date").attributes["stale_after_min"] == pytest.approx(157.5)
+    # Once three publications have been seen, it never flips to out of date.
+    assert all(f == "off" for t, f in flags if t >= NOW + timedelta(hours=2, minutes=45))
+    assert any(f == "on" for _, f in flags)  # it did flap before learning
+
+
+WATCH = """IDQ20800
+Australian Government Bureau of Meteorology
+Queensland
+
+Flood Watch for South East Queensland Coastal Catchments
+
+Issued at 4:05 pm EST on Friday 23 October 2026
+
+Flood Watch Number: 1
+
+Heavy rainfall may cause minor to moderate flooding from Saturday.
+
+Catchments likely to be affected include:
+Noosa River
+Pine and Caboolture Rivers
+Logan and Albert Rivers
+Coomera River
+
+Next issue:
+The next Flood Watch will be issued by 4:00 pm Saturday.
+"""
+
+
+async def test_warning_for_gauges_river_when_gauge_not_named(hass, bom, freezer):
+    """Most gauges are not BOM forecast points: match by the river in the title."""
+    import pathlib
+
+    text = (pathlib.Path(__file__).parent / "fixtures" / "IDQ20885.txt").read_text()
+    publish(bom, NOW, series(NOW, 2, 1.0, 0.0))
+    bom.warnings["IDQ20885"] = text.replace("Waterford", "Elsewhere")
+    entry = await setup(hass, bom, freezer)
+    s = state(hass, f"{B}_bom_flood_warning")
+    assert s.state == "on"
+    assert s.attributes["match"] == "river"
+    assert s.attributes["forecast_level_m"] is None
+    assert state(hass, "binary_sensor.slacks_creek_bom_flood_warning").state == "off"
+
+    # The same river name in another state's warning is a different river.
+    bom.warnings.clear()
+    bom.warnings["IDN20885"] = text.replace("Waterford", "Elsewhere")
+    await poll(hass, entry, freezer, NOW + timedelta(minutes=15))
+    assert state(hass, f"{B}_bom_flood_warning").state == "off"
+
+
+async def test_flood_watch_is_an_attribute_not_a_warning(hass, bom, freezer):
+    publish(bom, NOW, series(NOW, 2, 1.0, 0.0))
+    bom.warnings["IDQ20800"] = WATCH
+    await setup(hass, bom, freezer)
+    s = state(hass, f"{B}_bom_flood_warning")
+    assert s.state == "off"
+    assert s.attributes["watch_title"] == "Flood Watch for South East Queensland Coastal Catchments"
+    assert s.attributes["watch_issued"].startswith("4:05 pm")
+    assert state(hass, "binary_sensor.slacks_creek_bom_flood_warning").attributes["watch_title"] is None

@@ -1,0 +1,109 @@
+IDQ20790
+Australian Government Bureau of Meteorology
+
+Major Flood Warning for the Mary River
+
+Issued at 5:31 pm AEST on Sunday 25 October 2026
+Flood Warning Number: 7
+
+
+MAJOR FLOODING POSSIBLE AT TIARO OVERNIGHT INTO MONDAY, WITH PEAK EXPECTED DURING MONDAY
+MINOR FLOODING POSSIBLE AT MARYBOROUGH FROM EARLY MONDAY
+
+Rainfall during the last few days has caused river level rises along the Mary River and
+tributaries. Minor flooding is occurring at Gympie, where a peak is expected Sunday
+evening. The flood peak will then move downstream over the next day or two. Moderate
+flooding is occurring at Miva, with a peak expected overnight Sunday into Monday. At
+Tiaro, moderate flooding is occurring, with major flooding possible overnight Sunday into
+Monday and a peak expected on Monday. Minor flooding is possible at Maryborough from early
+Monday, with a peak expected Monday evening.
+There is still significant uncertainty in forecast peak heights downstream of Gympie at
+this stage with Gympie yet to reach a peak. Forecasts will be refined as peaks are
+observed at Gympie, Miva, Tiaro, and other locations.
+
+Mary River to Gympie:
+Minor flooding is occurring along the Mary River to Gympie.
+
+No observations are currently available for the Mary River at Dagun Pocket, however the
+river level is expected to be above the minor flood level and around a peak. The Mary
+River at Dagun Pocket is likely to remain above the minor flood level (7.00 m) overnight
+Sunday into Monday.
+
+The Mary River at Gympie is currently at 9.51 m and rising, above the minor flood level
+(6.00 m). The Mary River at Gympie may peak near 9.80 m Sunday evening, with minor
+flooding.
+
+Six Mile Creek:
+Minor flooding is occurring along Six Mile Creek at Cooran Alert.
+
+Mary River downstream of Gympie:
+Major flooding is possible along the Mary River downstream of Gympie.
+
+The Mary River at Miva is currently at 12.23 m and rising, with moderate flooding. The
+Mary River at Miva is expected to peak above the moderate flood level (9.50 m) overnight
+Sunday into Monday. The river may fall below the moderate flood level (9.50 m) Monday
+evening.
+
+The Mary River at Tiaro is currently at 11.04 m and rising, with moderate flooding. The
+Mary River at Tiaro may exceed the major flood level (12.00 m) overnight Sunday into
+Monday. The river may peak above the major flood level (12.00 m) mid-Monday.
+
+The Mary River at Maryborough (Portside) is currently at 3.50 m and steady, below the
+minor flood level. The Mary River at Maryborough (Portside) may exceed the minor flood
+level (5.00 m) early Monday morning. The river may peak near 5.60 m Monday evening, with
+minor flooding. Forecasts will be refined as upstream peaks are observed at Gympie, Miva,
+Tiaro, and other locations.
+
+Tinana Creek:
+Minor flooding is occurring along Tinana Creek at Tagigan Road.
+
+Safety Advice:
+* Don't drive, walk, swim or play in floodwater because it is dangerous.
+* Stay away from flooded drains, rivers, streams and waterways.
+* Obey road closure signs. Plan ahead so you don't drive on flooded roads.
+* Check the ABC and local media for updates. The situation can change quickly, so stay
+informed.
+* For local emergency management warnings and advice visit
+www.disaster.qld.gov.au/warnings.
+
+For emergency assistance call SES on telephone number 132 500. In life-threatening
+emergencies, call 000 (triple zero) immediately.
+
+Next issue:
+The next warning will be issued by 12:00 AM AEST on Monday 26 October 2026.
+
+Latest River Heights:
+Location                                    River Height   Tendency Time of Observation
+Obi Obi Creek at Baroon Pocket Dam (HG)     217.48 mAHD    Steady   3:47 pm Sun 25/10/26
+Mary River at Conondale                       1.95 m       Steady   2:35 pm Sun 25/10/26
+Mary River at Bellbird Creek                  2.08 m       Steady   5:00 pm Sun 25/10/26
+Mary River at Kenilworth Homestead            1.31 m       Steady   4:45 pm Sun 25/10/26
+Mary River at Moy Pocket                      4.45 m       Falling  5:00 pm Sun 25/10/26
+Yabba Creek at Borumba Dam (HG)               0.35 m       Steady   4:27 pm Sun 25/10/26
+Yabba Creek at Imbil                          2.24 m       Steady   4:46 pm Sun 25/10/26
+Kandanga Creek at Hygait                      2.52 m       Falling  5:10 pm Sun 25/10/26
+Six Mile Creek at Lake Macdonald Dam (HG)   93.84 mAHD     Steady   4:48 pm Sun 25/10/26
+Six Mile Creek at Cooran Alert                7.76 m       Rising   5:00 pm Sun 25/10/26
+Deep Creek at Cedar Pocket Dam HG           101.72 mAHD    Steady   2:36 pm Sun 25/10/26
+Mary River at Gympie                          9.51 m       Rising   5:09 pm Sun 25/10/26
+Mary River at Fishermans Pocket               11.37 m      Rising   5:10 pm Sun 25/10/26
+Wide Bay Creek at Brooyar                     3.89 m       Falling  5:05 pm Sun 25/10/26
+Mary River at Miva                            12.23 m      Rising   5:20 pm Sun 25/10/26
+Munna Creek at Marodian                       7.22 m       Steady   5:00 pm Sun 25/10/26
+Mary River at Home Park                       11.51 m      Rising   5:15 pm Sun 25/10/26
+Mary River at Tiaro                           11.04 m      Rising   5:10 pm Sun 25/10/26
+Mary River at Owanyilla                       6.80 m       Steady   5:25 pm Sun 25/10/26
+Mary River at The Barrage                     6.94 m       Rising   4:38 pm Sun 25/10/26
+Tinana Creek at Tagigan Road                  4.40 m       Rising   5:00 pm Sun 25/10/26
+Tinana Creek at Bauple East                   6.11 m       Steady   5:00 pm Sun 25/10/26
+Tinana Creek at Teddington Weir (HG)         9.61 mAHD     Rising   9:00 am Sun 25/10/26
+Tinana Creek at Tinana Barrage (HG)           3.85 m       Steady   4:28 pm Sun 25/10/26
+Mary River at Maryborough (Portside)          3.50 m       Steady   5:22 pm Sun 25/10/26
+
+This advice is also available by dialling 1300 659 219. Warning, rainfall and river
+information are available at http://www.bom.gov.au/australia/flood.
+
+Copyright Commonwealth of Australia 2011, Bureau of Meteorology (ABN 92 637 533
+532).  Users of these web pages are deemed to have read and accepted the
+conditions described in the Copyright, Disclaimer, and Privacy statements
+(http://www.bom.gov.au/other/copyright.shtml).

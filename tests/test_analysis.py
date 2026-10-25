@@ -195,9 +195,13 @@ def test_genuine_flash_flood_is_accepted():
     """Rises of 1 and 3 m/h, and 2 m in 15 minutes, are real and must pass."""
     for rate in (1.0, 3.0, 8.0):
         tracker = A.GaugeTracker()
-        results = feed(tracker, steady(0, 60, 15, 1.0) + rising(75, 180, 15, 1.0 + rate / 4, rate))
-        assert all(r.accepted for r in results), rate
-        assert tracker.latest.level > 1.0 + rate
+        series = rising(75, 180, 15, 1.0 + rate / 4, rate)
+        results = feed(tracker, steady(0, 60, 15, 1.0) + series)
+        assert not any(r.rejected_level for r in results), rate
+        # At most the first jump waits for one more reading to confirm it.
+        assert sum(r.held for r in results) <= 1, rate
+        assert tracker.latest.level == series[-1][1]
+        assert len(tracker.history) == 5 + len(series)
 
 
 def test_single_dropout_rejected():
@@ -344,7 +348,84 @@ def test_stale_limits_follow_cadence():
     assert fast.stale_after_hours() == 1.0
     slow = A.GaugeTracker()
     feed(slow, [(0, 1.0), (180, 1.0), (360, 1.0), (540, 1.0)])
-    assert slow.stale_after_hours() == 9.0
+    # 3 x cadence would be 9 h; capped so a dead feed is noticed within 6 h.
+    assert slow.stale_after_hours() == 6.0
+
+
+def test_stale_limit_follows_publication_not_logging():
+    """Canungra, Oct 2026: logs every ~5 min in rain, BOM publishes hourly ~45 min late.
+
+    Judged by cadence it was out of date for half of every hour.
+    """
+    tracker = A.GaugeTracker()
+    feed(tracker, [(m, 1.0 + m / 1000) for m in range(0, 120, 5)])
+    assert tracker.stale_after_hours() == 1.0  # cadence-based, before any publications
+    for hour in range(3):
+        # Newest reading at hh:55, next batch published at (hh+1):45.
+        tracker.note_arrival(obs(55 + 60 * hour, 1.0), at(105 + 60 * hour))
+    assert tracker.stale_after_hours() == pytest.approx(1.5 * 50 / 60, abs=0.01)
+    # Survives a restart.
+    again = A.GaugeTracker.from_dict(tracker.to_dict())
+    assert again.stale_after_hours() == tracker.stale_after_hours()
+
+
+def test_stale_limit_from_publications_is_capped():
+    tracker = A.GaugeTracker()
+    for i in range(5):
+        tracker.note_arrival(obs(0, 1.0), at(10 * 60))
+    assert tracker.stale_after_hours() == 6.0
+    tracker.note_arrival(obs(0, 1.0), at(-5))  # nonsense ages are ignored
+    assert len(tracker.arrival_ages) == 5
+
+
+# ---------------------------------------------------------------------------
+# Single-reading spikes
+# ---------------------------------------------------------------------------
+
+
+def test_one_off_spike_is_never_shown():
+    """Wolffdene, Oct 2026: 1.80 -> 2.65 -> 1.80 m."""
+    tracker = A.GaugeTracker()
+    feed(tracker, steady(0, 60, 15, 1.80))
+    held = tracker.ingest(obs(75, 2.65))
+    assert held.held and not held.accepted
+    assert tracker.latest.level == 1.80
+    assert tracker.ingest(obs(90, 1.80)).accepted
+    assert [o.level for o in tracker.history] == [1.80] * 6
+    assert tracker.held is None
+
+
+def test_big_spike_on_slow_gauge_is_dropped():
+    """Plunkett Road, Oct 2026: 4.35 m against a real peak of 1.05 m."""
+    tracker = A.GaugeTracker()
+    feed(tracker, [(0, 0.80), (60, 0.82), (120, 0.85), (180, 4.35), (240, 0.90)])
+    assert max(o.level for o in tracker.history) == 0.90
+
+
+def test_real_jump_is_confirmed_by_next_reading():
+    tracker = A.GaugeTracker()
+    feed(tracker, steady(0, 60, 15, 1.0))
+    assert tracker.ingest(obs(75, 2.0)).held
+    assert tracker.ingest(obs(90, 2.3)).accepted
+    assert [o.level for o in tracker.history][-2:] == [2.0, 2.3]
+
+
+def test_held_reading_repeated_on_later_polls_stays_held():
+    tracker = A.GaugeTracker()
+    feed(tracker, steady(0, 60, 15, 1.0))
+    for _ in range(3):
+        assert tracker.ingest(obs(75, 2.0)).held
+    assert tracker.latest.level == 1.0
+
+
+def test_spike_in_backfill_and_seed_is_dropped():
+    series = [obs(m, 1.8) for m in range(0, 120, 15)]
+    series[4] = obs(60, 2.65)
+    assert max(o.level for o in A.screen_series(series)) == 1.8
+    tracker = A.GaugeTracker()
+    feed(tracker, [(0, 1.8), (15, 1.8), (45, 1.8)])
+    assert not tracker.ingest(obs(30, 2.65)).accepted
+    assert tracker.ingest(obs(30, 1.81)).accepted
     new = A.GaugeTracker()
     new.ingest(obs(0, 1.0))
     assert new.stale_after_hours() == 3.0
@@ -553,3 +634,74 @@ def test_rolling_hour_rainfall():
     del q[end - timedelta(minutes=30)]
     assert A.rolling_hour_rainfall("1", q, end) == (None, None)  # gap: no undercount
     assert A.rolling_hour_rainfall("1", {}, end) == (None, None)
+
+
+def test_real_major_warning_mary_river():
+    w = _real("IDQ20790_mary_major")
+    assert w.severity == "major" and not w.final
+    tiaro = A.gauge_forecast(w, "Mary River at Tiaro")
+    assert (tiaro.level_m, tiaro.flood_class, tiaro.when) == (12.0, "major", "overnight Sunday into Monday")
+    miva = A.gauge_forecast(w, "Mary River at Miva")
+    assert (miva.level_m, miva.flood_class, miva.direction) == (9.5, "moderate", "peak")
+    port = A.gauge_forecast(w, "Mary River at Maryborough (Portside)")
+    assert (port.level_m, port.flood_class, port.when) == (5.6, "minor", "Monday evening")
+    dagun = A.gauge_forecast(w, "Mary River at Dagun Pocket")
+    assert (dagun.flood_class, dagun.direction) == ("minor", "remain")
+
+
+def test_real_final_warning_and_creek_continuation():
+    w = _real("IDQ20809_bremer_final")
+    assert w.final and w.severity is None
+    amberley = A.gauge_forecast(w, "Warrill Creek at Amberley")
+    assert any(s.startswith("The creek is currently at 3.52 m") for s in amberley.sentences)
+    assert (amberley.flood_class, amberley.direction) == (None, "fall")
+    rosewood = A.gauge_forecast(w, "Bremer River at Rosewood")
+    assert (rosewood.flood_class, rosewood.direction) == (None, "remain")
+
+
+def _w(title: str, body: str = "", pid: str = "IDQ20885") -> A.FloodWarning:
+    return A.FloodWarning(pid, title, None, None, body)
+
+
+@pytest.mark.parametrize(
+    ("gauge", "title", "expected"),
+    [
+        ("Albert River at Tamborine", "Major Flood Warning for the Logan and Albert Rivers", True),
+        ("Logan River at Logan Village", "Major Flood Warning for the Logan and Albert Rivers", True),
+        ("Coomera River at Canungra Army", "Flood Warning for the Logan, Albert and Coomera Rivers", True),
+        ("Coomera River at Canungra Army", "Minor Flood Warning for the Coomera River", True),
+        ("Coomera River at Canungra Army", "Major Flood Warning for the Logan and Albert Rivers", False),
+        ("Cedar Creek at Plunkett Road", "Flood Warning for the Pine and Caboolture Rivers", False),
+        ("Cedar Creek at Plunkett Road", "Flood Warning for Cedar Creek", True),
+        ("Albert River at Wolffdene", "Flood Warning for the Albert Creek", False),
+        ("Slacks Creek", "Flood Warning for Slacks Creek", True),
+        ("Mt Crosby Weir", "Flood Warning for the Brisbane River", False),
+    ],
+)
+def test_warning_names_river(gauge, title, expected):
+    assert A.warning_names_river(_w(title), gauge) is expected
+
+
+def test_river_match_uses_title_only():
+    w = _w("Flood Warning for the Pine and Caboolture Rivers", "Cedar Creek at Bunya is rising.")
+    assert not A.warning_names_river(w, "Cedar Creek at Plunkett Road")
+
+
+def test_flood_watch_lists_catchments():
+    w = A.parse_flood_warning(
+        "IDQ20800",
+        "IDQ20800\nBureau\n\nFlood Watch for South East Queensland Coastal Catchments\n\n"
+        "Issued at 4:05 pm\n\nCatchments likely to be affected include:\nNoosa River\n"
+        "Logan and Albert Rivers\nCoomera River\n",
+    )
+    assert w is not None and w.watch and not w.final
+    assert A.watch_covers_river(w, "Albert River at Tamborine")
+    assert A.watch_covers_river(w, "Coomera River at Canungra Army")
+    assert not A.watch_covers_river(w, "Mary River at Gympie")
+
+
+def test_title_must_start_with_warning_type():
+    text = "IDQ20999\nBureau\n\nRefer to Flood Warning products for river details.\n\nIssued at 1 pm\n"
+    assert A.parse_flood_warning("IDQ20999", text) is None
+    ok = "IDQ20999\nBureau\n\nInitial Moderate Flood Warning for the Bremer River\n\nIssued at 1 pm\n"
+    assert A.parse_flood_warning("IDQ20999", ok).title.startswith("Initial Moderate")
