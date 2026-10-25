@@ -553,3 +553,26 @@ def test_rolling_hour_rainfall():
     del q[end - timedelta(minutes=30)]
     assert A.rolling_hour_rainfall("1", q, end) == (None, None)  # gap: no undercount
     assert A.rolling_hour_rainfall("1", {}, end) == (None, None)
+
+
+def test_real_major_warning_mary_river():
+    w = _real("IDQ20790_mary_major")
+    assert w.severity == "major" and not w.final
+    tiaro = A.gauge_forecast(w, "Mary River at Tiaro")
+    assert (tiaro.level_m, tiaro.flood_class, tiaro.when) == (12.0, "major", "overnight Sunday into Monday")
+    miva = A.gauge_forecast(w, "Mary River at Miva")
+    assert (miva.level_m, miva.flood_class, miva.direction) == (9.5, "moderate", "peak")
+    port = A.gauge_forecast(w, "Mary River at Maryborough (Portside)")
+    assert (port.level_m, port.flood_class, port.when) == (5.6, "minor", "Monday evening")
+    dagun = A.gauge_forecast(w, "Mary River at Dagun Pocket")
+    assert (dagun.flood_class, dagun.direction) == ("minor", "remain")
+
+
+def test_real_final_warning_and_creek_continuation():
+    w = _real("IDQ20809_bremer_final")
+    assert w.final and w.severity is None
+    amberley = A.gauge_forecast(w, "Warrill Creek at Amberley")
+    assert any(s.startswith("The creek is currently at 3.52 m") for s in amberley.sentences)
+    assert (amberley.flood_class, amberley.direction) == (None, "fall")
+    rosewood = A.gauge_forecast(w, "Bremer River at Rosewood")
+    assert (rosewood.flood_class, rosewood.direction) == (None, "remain")

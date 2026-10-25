@@ -42,6 +42,7 @@ def _warning_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
     return {
         "title": w.title if w else None,
         "issued": w.issued if w else None,
+        "final": w.final if w else None,
         "url": w.url if w else None,
         "forecast_level_m": f.level_m if f else None,
         "forecast_class": f.flood_class if f else None,
@@ -62,7 +63,10 @@ BINARY_SENSORS: tuple[BomBinaryDescription, ...] = (
     BomBinaryDescription(
         key="bom_warning",
         device_class=BinarySensorDeviceClass.SAFETY,
-        is_on_fn=lambda r, now: (r.warning is not None) if r.warnings_ok is not None else None,
+        # A "Final" warning is BOM's all clear, so it does not turn this on.
+        is_on_fn=lambda r, now: (
+            (r.warning is not None and not r.warning.final) if r.warnings_ok is not None else None
+        ),
         attrs_fn=_warning_attrs,
     ),
     BomBinaryDescription(

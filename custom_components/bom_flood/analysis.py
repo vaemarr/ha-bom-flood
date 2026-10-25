@@ -679,7 +679,7 @@ _FORECAST_RE = re.compile(
 _WITH_CLASS_RE = re.compile(r"\bwith\s+(minor|moderate|major)\s+flooding\b", re.IGNORECASE)
 _HEADING_RE = re.compile(r"^[A-Z][^.:]{2,80}:$")
 # A sentence that carries on about the gauge named just before it.
-_CONTINUES_RE = re.compile(r"^(?:The|This)\s+river\b|^Further\s+(?:rises|falls)\b|^It\b", re.IGNORECASE)
+_CONTINUES_RE = re.compile(r"^(?:The|This)\s+(?:river|creek|brook)\b|^Further\s+(?:rises|falls)\b|^It\b", re.IGNORECASE)
 _OTHER_GAUGE_RE = re.compile(r"\b(?:River|Creek|Brook)\s+at\s+[A-Z]")
 _STOP_SECTIONS = re.compile(r"^(Latest River Heights|River Heights|Next issue|Warning Information)\b", re.IGNORECASE)
 
@@ -691,6 +691,11 @@ class FloodWarning:
     issued: str | None
     severity: str | None  # minor / moderate / major from the title, if stated
     body: str             # narrative text, without the river height table
+
+    @property
+    def final(self) -> bool:
+        """BOM's last warning of an event: flooding has ended or is ending."""
+        return self.title.lower().startswith("final ")
 
     @property
     def url(self) -> str:

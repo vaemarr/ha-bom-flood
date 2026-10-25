@@ -796,7 +796,11 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
             forecast = A.gauge_forecast(warning, gauge_name)
             if forecast is None:
                 continue
-            score = rank.get(warning.severity or "", 0) * 10 + (forecast.level_m is not None)
+            score = (
+                (not warning.final) * 100
+                + rank.get(warning.severity or "", 0) * 10
+                + (forecast.level_m is not None)
+            )
             if best is None or score > best[0]:
                 best = (score, warning, forecast)
         return (best[1], best[2]) if best else (None, None)

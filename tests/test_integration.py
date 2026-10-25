@@ -423,3 +423,16 @@ async def test_rain_files_only_downloaded_when_new(hass, bom, freezer):
     assert len(rain_downloads) == 2  # one each, not again on the second poll
     s = state(hass, f"{L}_rainfall_last_hour")
     assert float(s.state) == 0.0 and s.attributes["source"] == "15-minute"
+
+
+async def test_final_warning_is_all_clear(hass, bom, freezer):
+    import pathlib
+
+    text = (pathlib.Path(__file__).parent / "fixtures" / "IDQ20885.txt").read_text()
+    final = text.replace("Major Flood Warning for the Logan", "Final Flood Warning for the Logan")
+    publish(bom, NOW, series(NOW, 2, 1.0, 0.0))
+    bom.warnings["IDQ20885"] = final
+    await setup(hass, bom, freezer)
+    s = state(hass, f"{B}_bom_flood_warning")
+    assert s.state == "off"
+    assert s.attributes["final"] is True and s.attributes["title"].startswith("Final")
