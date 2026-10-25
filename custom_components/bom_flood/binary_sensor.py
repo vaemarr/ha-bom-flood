@@ -56,6 +56,12 @@ def _warning_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
         "forecast_when": f.when if f else None,
         "forecast_direction": f.direction if f else None,
         "bom_says": " ".join(f.sentences)[:600] if f else None,
+        # "gauge": BOM names this gauge. "river": the warning covers this
+        # gauge's river but does not mention the gauge itself.
+        "match": r.warning_match,
+        "watch_title": r.watch.title if r.watch else None,
+        "watch_issued": r.watch.issued if r.watch else None,
+        "watch_url": r.watch.url if r.watch else None,
         "warnings_checked": r.warnings_ok,
     }
 

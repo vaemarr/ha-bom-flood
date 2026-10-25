@@ -74,8 +74,12 @@ hour; act as if it could be". The straight-line time stays in the
 
 **BOM's official warnings come first.** When BOM issues a flood warning naming a gauge,
 its forecast (level, class and timing, written by BOM's forecasters using rainfall and
-catchment models) appears on the *BOM flood warning* entity. Past BOM warnings are not
-archived publicly, so their accuracy could not be scored here.
+catchment models) appears on the *BOM flood warning* entity. Most gauges are not BOM
+forecast locations, so a warning whose title names the gauge's river ("Flood Warning for
+the Logan and Albert Rivers") also turns it on, with attribute `match: river` and no
+forecast level. A *Flood Watch* listing the river (flooding possible in coming days) does
+not turn it on; it shows in the `watch_title`, `watch_issued` and `watch_url` attributes.
+Past BOM warnings are not archived publicly, so their accuracy could not be scored here.
 
 **What this means in practice**
 

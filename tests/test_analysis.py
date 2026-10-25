@@ -657,3 +657,51 @@ def test_real_final_warning_and_creek_continuation():
     assert (amberley.flood_class, amberley.direction) == (None, "fall")
     rosewood = A.gauge_forecast(w, "Bremer River at Rosewood")
     assert (rosewood.flood_class, rosewood.direction) == (None, "remain")
+
+
+def _w(title: str, body: str = "", pid: str = "IDQ20885") -> A.FloodWarning:
+    return A.FloodWarning(pid, title, None, None, body)
+
+
+@pytest.mark.parametrize(
+    ("gauge", "title", "expected"),
+    [
+        ("Albert River at Tamborine", "Major Flood Warning for the Logan and Albert Rivers", True),
+        ("Logan River at Logan Village", "Major Flood Warning for the Logan and Albert Rivers", True),
+        ("Coomera River at Canungra Army", "Flood Warning for the Logan, Albert and Coomera Rivers", True),
+        ("Coomera River at Canungra Army", "Minor Flood Warning for the Coomera River", True),
+        ("Coomera River at Canungra Army", "Major Flood Warning for the Logan and Albert Rivers", False),
+        ("Cedar Creek at Plunkett Road", "Flood Warning for the Pine and Caboolture Rivers", False),
+        ("Cedar Creek at Plunkett Road", "Flood Warning for Cedar Creek", True),
+        ("Albert River at Wolffdene", "Flood Warning for the Albert Creek", False),
+        ("Slacks Creek", "Flood Warning for Slacks Creek", True),
+        ("Mt Crosby Weir", "Flood Warning for the Brisbane River", False),
+    ],
+)
+def test_warning_names_river(gauge, title, expected):
+    assert A.warning_names_river(_w(title), gauge) is expected
+
+
+def test_river_match_uses_title_only():
+    w = _w("Flood Warning for the Pine and Caboolture Rivers", "Cedar Creek at Bunya is rising.")
+    assert not A.warning_names_river(w, "Cedar Creek at Plunkett Road")
+
+
+def test_flood_watch_lists_catchments():
+    w = A.parse_flood_warning(
+        "IDQ20800",
+        "IDQ20800\nBureau\n\nFlood Watch for South East Queensland Coastal Catchments\n\n"
+        "Issued at 4:05 pm\n\nCatchments likely to be affected include:\nNoosa River\n"
+        "Logan and Albert Rivers\nCoomera River\n",
+    )
+    assert w is not None and w.watch and not w.final
+    assert A.watch_covers_river(w, "Albert River at Tamborine")
+    assert A.watch_covers_river(w, "Coomera River at Canungra Army")
+    assert not A.watch_covers_river(w, "Mary River at Gympie")
+
+
+def test_title_must_start_with_warning_type():
+    text = "IDQ20999\nBureau\n\nRefer to Flood Warning products for river details.\n\nIssued at 1 pm\n"
+    assert A.parse_flood_warning("IDQ20999", text) is None
+    ok = "IDQ20999\nBureau\n\nInitial Moderate Flood Warning for the Bremer River\n\nIssued at 1 pm\n"
+    assert A.parse_flood_warning("IDQ20999", ok).title.startswith("Initial Moderate")

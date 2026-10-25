@@ -783,7 +783,13 @@ def rolling_hour_rainfall(
 # the active warnings. Weather and marine warnings share these id ranges and
 # are told apart by their title.
 WARNING_FILE_RE = re.compile(r"^ID[QNVST][23]\d{4}\.txt$")
-_TITLE_RE = re.compile(r"^.*\bFlood (?:Warning|Watch)\b.*$", re.IGNORECASE | re.MULTILINE)
+# A product title starts with the warning type, optionally qualified:
+# "Initial Minor Flood Warning for ...", "Final Flood Warning ...", "Flood Watch for ...".
+# Anchored, so a sentence like "Refer to Flood Warning products" is not a title.
+_TITLE_RE = re.compile(
+    r"^(?:(?:Initial|Renewed|Updated|Final|Minor|Moderate|Major|Severe)\s+)*Flood\s+(?:Warning|Watch)\b.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 _ISSUED_RE = re.compile(r"^Issued at (.+)$", re.MULTILINE)
 _CLASS_RE = re.compile(r"\b(minor|moderate|major)\b", re.IGNORECASE)
 # Real warnings say "is likely to exceed the minor flood level (5.00 m) Friday
@@ -821,6 +827,11 @@ class FloodWarning:
         return self.title.lower().startswith("final ")
 
     @property
+    def watch(self) -> bool:
+        """A Flood Watch: flooding is possible in coming days, not yet a warning."""
+        return re.match(r"^flood\s+watch\b", self.title, re.IGNORECASE) is not None
+
+    @property
     def url(self) -> str:
         return f"https://www.bom.gov.au/cgi-bin/wrap_fwo.pl?{self.product_id}.html"
 
@@ -855,6 +866,40 @@ def parse_flood_warning(product_id: str, text: str) -> FloodWarning | None:
         severity=severity.group(1).lower() if severity else None,
         body="\n".join(body_lines),
     )
+
+
+_RIVER_RE = re.compile(r"^(?P<base>.+?)\s+(?P<kind>River|Creek|Brook)\b", re.IGNORECASE)
+
+
+def _river_pattern(gauge_name: str) -> re.Pattern[str] | None:
+    """Match the gauge's river by name, also inside lists like "Logan and Albert Rivers".
+
+    "Albert River at Tamborine" matches "the Logan and Albert Rivers" and
+    "Albert River"; "Logan River at ..." matches "Logan, Albert and Coomera Rivers".
+    """
+    m = _RIVER_RE.match(gauge_name.strip())
+    if m is None:
+        return None
+    base = r"\s+".join(re.escape(w) for w in m.group("base").split())
+    kind = m.group("kind")
+    others = r"(?:\s*(?:,|\band\b|&)\s*(?:the\s+)?[A-Z][\w'-]+(?:\s+[A-Z][\w'-]+)?)*"
+    return re.compile(rf"\b{base}{others}\s+{kind}s?\b", re.IGNORECASE)
+
+
+def warning_names_river(warning: FloodWarning, gauge_name: str) -> bool:
+    """A flood warning whose title names this gauge's river.
+
+    Only the title: river names repeat across a state (several Cedar Creeks in
+    Queensland), and the title is where BOM says which rivers it covers.
+    """
+    pattern = _river_pattern(gauge_name)
+    return pattern is not None and pattern.search(warning.title) is not None
+
+
+def watch_covers_river(warning: FloodWarning, gauge_name: str) -> bool:
+    """A Flood Watch that lists this gauge's river among the catchments at risk."""
+    pattern = _river_pattern(gauge_name)
+    return pattern is not None and pattern.search(warning.title + "\n" + warning.body) is not None
 
 
 def _location_pattern(gauge_name: str) -> re.Pattern[str]:

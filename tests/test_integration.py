@@ -507,3 +507,58 @@ async def test_stale_limit_learns_publication_delay(hass, bom, freezer):
     # Once three publications have been seen, it never flips to out of date.
     assert all(f == "off" for t, f in flags if t >= NOW + timedelta(hours=2, minutes=45))
     assert any(f == "on" for _, f in flags)  # it did flap before learning
+
+
+WATCH = """IDQ20800
+Australian Government Bureau of Meteorology
+Queensland
+
+Flood Watch for South East Queensland Coastal Catchments
+
+Issued at 4:05 pm EST on Friday 23 October 2026
+
+Flood Watch Number: 1
+
+Heavy rainfall may cause minor to moderate flooding from Saturday.
+
+Catchments likely to be affected include:
+Noosa River
+Pine and Caboolture Rivers
+Logan and Albert Rivers
+Coomera River
+
+Next issue:
+The next Flood Watch will be issued by 4:00 pm Saturday.
+"""
+
+
+async def test_warning_for_gauges_river_when_gauge_not_named(hass, bom, freezer):
+    """Most gauges are not BOM forecast points: match by the river in the title."""
+    import pathlib
+
+    text = (pathlib.Path(__file__).parent / "fixtures" / "IDQ20885.txt").read_text()
+    publish(bom, NOW, series(NOW, 2, 1.0, 0.0))
+    bom.warnings["IDQ20885"] = text.replace("Waterford", "Elsewhere")
+    entry = await setup(hass, bom, freezer)
+    s = state(hass, f"{B}_bom_flood_warning")
+    assert s.state == "on"
+    assert s.attributes["match"] == "river"
+    assert s.attributes["forecast_level_m"] is None
+    assert state(hass, "binary_sensor.slacks_creek_bom_flood_warning").state == "off"
+
+    # The same river name in another state's warning is a different river.
+    bom.warnings.clear()
+    bom.warnings["IDN20885"] = text.replace("Waterford", "Elsewhere")
+    await poll(hass, entry, freezer, NOW + timedelta(minutes=15))
+    assert state(hass, f"{B}_bom_flood_warning").state == "off"
+
+
+async def test_flood_watch_is_an_attribute_not_a_warning(hass, bom, freezer):
+    publish(bom, NOW, series(NOW, 2, 1.0, 0.0))
+    bom.warnings["IDQ20800"] = WATCH
+    await setup(hass, bom, freezer)
+    s = state(hass, f"{B}_bom_flood_warning")
+    assert s.state == "off"
+    assert s.attributes["watch_title"] == "Flood Watch for South East Queensland Coastal Catchments"
+    assert s.attributes["watch_issued"].startswith("4:05 pm")
+    assert state(hass, "binary_sensor.slacks_creek_bom_flood_warning").attributes["watch_title"] is None
