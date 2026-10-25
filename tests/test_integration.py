@@ -562,3 +562,43 @@ async def test_flood_watch_is_an_attribute_not_a_warning(hass, bom, freezer):
     assert s.attributes["watch_title"] == "Flood Watch for South East Queensland Coastal Catchments"
     assert s.attributes["watch_issued"].startswith("4:05 pm")
     assert state(hass, "binary_sensor.slacks_creek_bom_flood_warning").attributes["watch_title"] is None
+
+
+async def test_tidal_gauge_rise_within_tide_is_not_a_flood_signal(hass, bom, freezer):
+    """Logan Village: the tide coming in must not say rising/flood soon/heads-up."""
+    import math
+
+    def tide(t: datetime) -> float:
+        h = (t - NOW).total_seconds() / 3600
+        return round(1.5 + 0.35 * math.sin(2 * math.pi * h / 12.42), 3)
+
+    def upto(end):
+        return [(t, tide(t)) for t, _ in series(end, 39.75, 0, 0)]
+
+    publish(bom, NOW, upto(NOW))
+    entry = await setup(hass, bom, freezer)
+    now = NOW
+    for _ in range(14):
+        now += timedelta(hours=1)
+        publish(bom, now, upto(now))
+        await poll(hass, entry, freezer, now)
+    assert state(hass, f"{L}_water_level").attributes["tidal"] is True
+
+    # Advance to the rising half of the tide.
+    while not (tide(now) - tide(now - timedelta(minutes=15)) > 0.02 and tide(now) > 1.6):
+        now += timedelta(minutes=15)
+        publish(bom, now, upto(now))
+        await poll(hass, entry, freezer, now)
+    assert state(hass, f"{L}_trend").state == "tidal"
+    assert state(hass, f"{L}_time_to_next_flood_level").state == STATE_UNKNOWN
+    assert state(hass, f"{B}_flood_heads_up").state == "off"
+
+    # The river rises above every recent high tide: back to normal behaviour.
+    rising = upto(now)
+    for i in range(1, 5):
+        rising.append((now + timedelta(minutes=15 * i), round(1.9 + 0.1 * i, 3)))
+    now = rising[-1][0]
+    publish(bom, now, rising)
+    await poll(hass, entry, freezer, now)
+    assert state(hass, f"{L}_trend").state == "rising"
+    assert state(hass, f"{L}_time_to_next_flood_level").state != STATE_UNKNOWN

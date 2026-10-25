@@ -57,6 +57,9 @@ def _level_attrs(r: StationReading, now: datetime) -> dict[str, Any]:
         # A big jump waiting for the next reading before it is shown.
         "unconfirmed_reading": r.unconfirmed_level,
         "unconfirmed_at": _iso(r.unconfirmed_at),
+        # Tidal gauge: rises and falls within tide_range_m are the tide.
+        "tidal": r.tidal,
+        "tide_range_m": r.tide_range_m,
         "level_shift_at": _iso(r.level_shift_at),
         "quality": r.quality,
         "latitude": r.lat,

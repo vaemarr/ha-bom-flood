@@ -5,6 +5,7 @@ the docstrings) so they cannot come back.
 """
 from __future__ import annotations
 
+import math
 import pathlib
 from datetime import datetime, timedelta, timezone
 
@@ -705,3 +706,73 @@ def test_title_must_start_with_warning_type():
     assert A.parse_flood_warning("IDQ20999", text) is None
     ok = "IDQ20999\nBureau\n\nInitial Moderate Flood Warning for the Bremer River\n\nIssued at 1 pm\n"
     assert A.parse_flood_warning("IDQ20999", ok).title.startswith("Initial Moderate")
+
+
+# ---------------------------------------------------------------------------
+# Tides
+# ---------------------------------------------------------------------------
+
+
+def tide(m: float, mean: float = 1.5, amp: float = 0.35) -> float:
+    return round(mean + amp * math.sin(2 * math.pi * (m / 60) / 12.42), 3)
+
+
+def feed_tide(tracker, start, end, step=15, **kw):
+    for m in range(start, end, step):
+        tracker.ingest(obs(m, tide(m, **kw)))
+        tracker.update_tide()
+
+
+def test_tide_detected_after_twelve_hours_of_matches():
+    tracker = A.GaugeTracker()
+    feed_tide(tracker, 0, 30 * 60)
+    assert not tracker.tidal  # not enough history to fit yet
+    feed_tide(tracker, 30 * 60, 41 * 60)
+    assert not tracker.tidal and tracker.tide_since is not None  # matching, not yet for 12 h
+    feed_tide(tracker, 41 * 60, 43 * 60)
+    assert tracker.tidal
+    assert tracker.tide_range_m == pytest.approx(0.7, abs=0.05)
+    again = A.GaugeTracker.from_dict(tracker.to_dict())
+    assert again.tidal and again.tide_range_m == tracker.tide_range_m
+
+
+def test_river_rise_is_not_a_tide():
+    tracker = A.GaugeTracker()
+    for m in range(0, 45 * 60, 15):
+        h = m / 60
+        level = 1.0 + (3.0 * math.exp(-((h - 25) / 6) ** 2))  # a flood hydrograph
+        tracker.ingest(obs(m, round(level, 3)))
+        tracker.update_tide()
+    assert not tracker.tidal and tracker.tide_since is None
+
+
+def test_flood_swamping_tide_turns_tidal_off():
+    tracker = A.GaugeTracker()
+    feed_tide(tracker, 0, 44 * 60)
+    assert tracker.tidal
+    for m in range(44 * 60, 84 * 60, 15):
+        h = m / 60 - 44
+        tracker.ingest(obs(m, round(tide(m) + 4.0 * (1 - math.exp(-h / 8)), 3)))
+        tracker.update_tide()
+    assert not tracker.tidal
+
+
+def test_within_tide_band():
+    tracker = A.GaugeTracker()
+    feed_tide(tracker, 0, 44 * 60)
+    assert tracker.within_tide(at(44 * 60))
+    lo, hi = tracker.tide_band()
+    assert hi == pytest.approx(1.85, abs=0.01) and lo == pytest.approx(1.15, abs=0.01)
+    level = tracker.latest.level
+    m = 44 * 60
+    while level <= hi + 0.3:  # the river rises above every recent high tide
+        m += 15
+        level += 0.1
+        assert tracker.ingest(obs(m, round(level, 3))).accepted
+    assert not tracker.within_tide(at(m))
+
+
+def test_tide_fit_needs_thirty_hours():
+    assert A.tide_fit([obs(m, tide(m)) for m in range(0, 20 * 60, 15)]) is None
+    fit, rng = A.tide_fit([obs(m, tide(m)) for m in range(0, 36 * 60, 15)])
+    assert fit > 0.95 and rng == pytest.approx(0.7, abs=0.05)

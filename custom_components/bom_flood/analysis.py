@@ -36,6 +36,7 @@ from .const import (
     PROJECTION_HORIZON_HOURS,
     SPIKE_HOLD_M,
     RAINFALL_MAX_AGE_HOURS,
+    HISTORY_HOURS,
     RATE_HISTORY_HOURS,
     RATE_MIN_SPAN_HOURS,
     RATE_WINDOW_HOURS,
@@ -50,6 +51,15 @@ from .const import (
     TREND_FALLING,
     TREND_RISING,
     TREND_STEADY,
+    TIDE_BAND_HOURS,
+    TIDE_BAND_MARGIN_M,
+    TIDE_CONFIRM_HOURS,
+    TIDE_MIN_FIT,
+    TIDE_MIN_RANGE_M,
+    TIDE_MIN_SPAN_HOURS,
+    TIDE_OFF_FIT,
+    TIDE_OFF_RANGE_M,
+    TIDE_PERIOD_HOURS,
     TREND_FALLING_THRESHOLD_M_PER_H,
     TREND_THRESHOLD_M_PER_H,
 )
@@ -458,6 +468,11 @@ class GaugeTracker:
     held: Observation | None = None
     # Age (h) of the newest reading just before each new one was published.
     arrival_ages: list[float] = field(default_factory=list)
+    # Tide detection: whether the gauge is tidal now, since when the readings
+    # have continuously matched a tide, and the latest tide range.
+    tidal: bool = False
+    tide_since: datetime | None = None
+    tide_range_m: float | None = None
 
     # -- ingestion ---------------------------------------------------------
 
@@ -555,7 +570,7 @@ class GaugeTracker:
         """Insert an older reading only if it fits its neighbours."""
         if any(o.observed_at == obs.observed_at for o in self.history):
             return IngestResult(accepted=True)
-        if obs.observed_at < self.history[-1].observed_at - timedelta(hours=RATE_HISTORY_HOURS):
+        if obs.observed_at < self.history[-1].observed_at - timedelta(hours=HISTORY_HOURS):
             return IngestResult(accepted=False)
         before = [o for o in self.history if o.observed_at < obs.observed_at]
         after = [o for o in self.history if o.observed_at > obs.observed_at]
@@ -569,7 +584,7 @@ class GaugeTracker:
         return IngestResult(accepted=True)
 
     def _trim(self) -> None:
-        cutoff = self.history[-1].observed_at - timedelta(hours=RATE_HISTORY_HOURS)
+        cutoff = self.history[-1].observed_at - timedelta(hours=HISTORY_HOURS)
         self.history = [o for o in self.history if o.observed_at >= cutoff]
 
     def reset(self) -> None:
@@ -599,6 +614,52 @@ class GaugeTracker:
             for a, b in zip(self.history, self.history[1:], strict=False)
         ]
         return median(gaps)
+
+    def update_tide(self) -> None:
+        """Re-check the readings for a tide (see TIDE_* in const)."""
+        latest = self.latest
+        if latest is None:
+            return
+        result = tide_fit(self.history)
+        fit, tide_range = result if result is not None else (0.0, 0.0)
+        if fit >= TIDE_MIN_FIT and tide_range >= TIDE_MIN_RANGE_M:
+            self.tide_range_m = round(tide_range, 2)
+            if self.tide_since is None:
+                self.tide_since = latest.observed_at
+            if _hours(self.tide_since, latest.observed_at) >= TIDE_CONFIRM_HOURS:
+                self.tidal = True
+        else:
+            self.tide_since = None
+            if fit < TIDE_OFF_FIT or tide_range < TIDE_OFF_RANGE_M:
+                self.tidal = False
+                self.tide_range_m = None
+
+    def is_tidal(self, now: datetime | None = None) -> bool:
+        return self.tidal
+
+    def tide_band(self) -> tuple[float, float] | None:
+        """Lowest and highest level 3 to 25 h before the latest reading."""
+        latest = self.latest
+        if latest is None:
+            return None
+        lo_h, hi_h = TIDE_BAND_HOURS
+        levels = [
+            o.level for o in self.history
+            if lo_h <= _hours(o.observed_at, latest.observed_at) <= hi_h
+        ]
+        if len(levels) < 4:
+            return None
+        return min(levels), max(levels)
+
+    def within_tide(self, now: datetime) -> bool:
+        """Tidal gauge, level inside yesterday's tide range: movement is the tide."""
+        if not self.is_tidal(now):
+            return False
+        band = self.tide_band()
+        latest = self.latest
+        if band is None or latest is None:
+            return True  # tidal, but not enough history to tell a flood from a tide yet
+        return band[0] - TIDE_BAND_MARGIN_M <= latest.level <= band[1] + TIDE_BAND_MARGIN_M
 
     def stale_after_hours(self) -> float:
         """How old the newest reading may get before it is called out of date."""
@@ -666,6 +727,9 @@ class GaugeTracker:
             "observations": [[o.observed_at.isoformat(), o.level] for o in self.history],
             "datum": self.datum,
             "arrival_ages": list(self.arrival_ages),
+            "tidal": self.tidal,
+            "tide_since": self.tide_since.isoformat() if self.tide_since else None,
+            "tide_range_m": self.tide_range_m,
         }
 
     @classmethod
@@ -702,9 +766,83 @@ class GaugeTracker:
                 float(a) for a in ages
                 if isinstance(a, (int, float)) and not isinstance(a, bool) and 0 < a <= 2 * STALE_MAX_HOURS
             ][-STALE_ARRIVAL_SAMPLES:]
+        tracker.tidal = data.get("tidal") is True
+        since = data.get("tide_since")
+        tracker.tide_since = parse_utc(since) if isinstance(since, str) else None
+        tide_range = data.get("tide_range_m")
+        if isinstance(tide_range, (int, float)) and not isinstance(tide_range, bool):
+            tracker.tide_range_m = float(tide_range)
         datum = data.get("datum")
         tracker.datum = datum if isinstance(datum, str) else None
         return tracker
+
+
+def _solve(a: list[list[float]], b: list[float]) -> list[float] | None:
+    """Solve a small linear system by Gaussian elimination with pivoting."""
+    n = len(b)
+    m = [row[:] + [b[i]] for i, row in enumerate(a)]
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda r: abs(m[r][col]))
+        if abs(m[pivot][col]) < 1e-12:
+            return None
+        m[col], m[pivot] = m[pivot], m[col]
+        for r in range(n):
+            if r != col:
+                f = m[r][col] / m[col][col]
+                m[r] = [x - f * y for x, y in zip(m[r], m[col], strict=True)]
+    return [m[i][n] / m[i][i] for i in range(n)]
+
+
+def _lstsq_sse(rows: list[list[float]], y: list[float]) -> tuple[float, list[float]] | None:
+    """Least-squares fit; returns (sum of squared errors, coefficients)."""
+    k = len(rows[0])
+    ata = [[sum(r[i] * r[j] for r in rows) for j in range(k)] for i in range(k)]
+    aty = [sum(r[i] * v for r, v in zip(rows, y, strict=True)) for i in range(k)]
+    coef = _solve(ata, aty)
+    if coef is None:
+        return None
+    sse = sum((v - sum(c * x for c, x in zip(coef, r, strict=True))) ** 2 for r, v in zip(rows, y, strict=True))
+    return sse, coef
+
+
+def tide_fit(history: list[Observation]) -> tuple[float, float] | None:
+    """How well a tide explains the readings: (share of variation, range in m).
+
+    Readings are resampled hourly. A smooth curve (quadratic) is fitted alone
+    and with 12.42 h and 6.21 h sinusoids added; the share is how much of the
+    curve-only error the tide removes. None with under TIDE_MIN_SPAN_HOURS.
+    """
+    if len(history) < 8:
+        return None
+    t0, t1 = history[0].observed_at, history[-1].observed_at
+    span = _hours(t0, t1)
+    if span < TIDE_MIN_SPAN_HOURS:
+        return None
+    xs = [_hours(t0, o.observed_at) for o in history]
+    ys = [o.level for o in history]
+    grid, vals, j = [], [], 0
+    h = 0.0
+    while h <= span:
+        while j < len(xs) - 2 and xs[j + 1] < h:
+            j += 1
+        x0, x1 = xs[j], xs[j + 1]
+        v = ys[j] if x1 == x0 else ys[j] + (ys[j + 1] - ys[j]) * (min(max(h, x0), x1) - x0) / (x1 - x0)
+        grid.append(h)
+        vals.append(v)
+        h += 1.0
+    w = 2 * math.pi / TIDE_PERIOD_HOURS
+    mid = span / 2
+    smooth = [[1.0, (g - mid) / mid, ((g - mid) / mid) ** 2] for g in grid]
+    tidal = [
+        r + [math.sin(w * g), math.cos(w * g), math.sin(2 * w * g), math.cos(2 * w * g)]
+        for r, g in zip(smooth, grid, strict=True)
+    ]
+    base = _lstsq_sse(smooth, vals)
+    full = _lstsq_sse(tidal, vals)
+    if base is None or full is None or base[0] <= 1e-9:
+        return None
+    coef = full[1]
+    return 1 - full[0] / base[0], 2 * math.hypot(coef[3], coef[4])
 
 
 def screen_series(observations: Iterable[Observation]) -> list[Observation]:

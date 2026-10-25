@@ -99,7 +99,8 @@
         "state": {
           "rising": "Rising",
           "steady": "Steady",
-          "falling": "Falling"
+          "falling": "Falling",
+          "tidal": "Tidal"
         }
       },
       "time_to_next_level": {

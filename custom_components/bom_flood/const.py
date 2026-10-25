@@ -131,7 +131,9 @@ FLOOD_SEVERITY = {
 TREND_RISING = "rising"
 TREND_FALLING = "falling"
 TREND_STEADY = "steady"
-TREND_OPTIONS = [TREND_RISING, TREND_STEADY, TREND_FALLING]
+# A tidal gauge moving within its usual tide range: the rise or fall is the tide.
+TREND_TIDAL = "tidal"
+TREND_OPTIONS = [TREND_RISING, TREND_STEADY, TREND_FALLING, TREND_TIDAL]
 # A gauge is "rising" above TREND_THRESHOLD_M_PER_H and "falling" below
 # -TREND_FALLING_THRESHOLD_M_PER_H; in between it is "steady", and no flood
 # projection is made. The band is deliberately asymmetric: missing a rise is
@@ -153,6 +155,31 @@ RATE_WINDOW_HOURS = 1.0
 RATE_WINDOW_MAX_HOURS = 2.0
 RATE_MIN_SPAN_HOURS = 0.5
 RATE_HISTORY_HOURS = 8.0
+# Readings kept per gauge: enough for tide detection, which needs over a day.
+HISTORY_HOURS = 40.0
+
+# Tidal gauges (Logan River at Logan Village swings ~0.6 m twice a day; Oct
+# 2026 it sent three false heads-ups). Detected from the readings: a 12.42 h
+# (+ 6.21 h) sinusoid on top of a smooth curve explains TIDE_MIN_FIT of the
+# remaining variation over the last 40 h, with a range of TIDE_MIN_RANGE_M or
+# more, continuously for TIDE_CONFIRM_HOURS. Off again as soon as the fit drops
+# below TIDE_OFF_FIT or the range below TIDE_OFF_RANGE_M: a flood swamps the
+# tide, and the gauge is then treated like any other. One-off matches happen
+# during floods (15 of 82,589 40 h windows over ten years of 23 non-tidal SEQ
+# gauges), which is why one match is never enough. Live Logan Village matched
+# 7 of 7 windows (0.72-0.95); the other live gauges 0 of 23.
+TIDE_PERIOD_HOURS = 12.42
+TIDE_MIN_SPAN_HOURS = 30.0
+TIDE_MIN_FIT = 0.6
+TIDE_MIN_RANGE_M = 0.15
+TIDE_CONFIRM_HOURS = 12.0
+TIDE_OFF_FIT = 0.4
+TIDE_OFF_RANGE_M = 0.1
+# While the level stays within the highs and lows of the previous day (readings
+# 3 to 25 h old) plus this margin, its rise or fall is taken as tide: trend
+# "tidal", and no time-to-flood or heads-up. Above that, it is the river.
+TIDE_BAND_HOURS = (3.0, 25.0)
+TIDE_BAND_MARGIN_M = 0.15
 
 # Flood projections beyond this many hours are not shown.
 PROJECTION_HORIZON_HOURS = 48.0
