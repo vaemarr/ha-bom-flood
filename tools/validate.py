@@ -30,14 +30,14 @@ import json
 import os
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from custom_components.bom_flood import analysis as A  # noqa: E402
-from custom_components.bom_flood.const import TREND_RISING  # noqa: E402
+from custom_components.bom_flood import analysis as A
+from custom_components.bom_flood.const import TREND_RISING
 
 MAP_TZ = {
     "IDQ": ZoneInfo("Australia/Brisbane"),
@@ -56,7 +56,7 @@ FORECAST_REL_TOL = 0.25
 
 def file_time(path: str) -> datetime:
     stamp = os.path.basename(path).split("_")[1].split(".")[0]
-    return datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+    return datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=UTC)
 
 
 def raw_latest(path: str) -> dict[str, tuple[str, str]]:
@@ -87,7 +87,7 @@ def map_time(product: str, local: str) -> datetime | None:
         naive = datetime.strptime(local, "%d-%m-%Y %H:%M:%S")
     except ValueError:
         return None
-    return naive.replace(tzinfo=MAP_TZ[product[:3]]).astimezone(timezone.utc)
+    return naive.replace(tzinfo=MAP_TZ[product[:3]]).astimezone(UTC)
 
 
 def load_timeline(data_dir: str) -> dict[str, list[A.Observation]]:

@@ -119,7 +119,7 @@ class BomFloodConfigFlow(ConfigFlow, domain=DOMAIN):
         if not self._stations:
             try:
                 self._stations = await self.hass.async_add_executor_job(fetch_region_map, self._region)
-            except Exception:  # noqa: BLE001 - shown to the user as cannot_connect
+            except Exception:  # shown to the user as cannot_connect
                 _LOGGER.exception("Failed to fetch BOM station list")
                 errors["base"] = "cannot_connect"
             else:
@@ -187,7 +187,7 @@ class BomFloodOptionsFlow(OptionsFlow):
                 self._stations = await self.hass.async_add_executor_job(
                     fetch_region_map, entry.data.get(CONF_REGION, "")
                 )
-            except Exception:  # noqa: BLE001 - shown to the user as cannot_connect
+            except Exception:  # shown to the user as cannot_connect
                 _LOGGER.exception("Failed to refresh BOM station list")
                 errors["base"] = "cannot_connect"
 
@@ -245,7 +245,8 @@ class BomFloodOptionsFlow(OptionsFlow):
         fields = []
         for meta in unclassified:
             for key, label in zip(THRESHOLD_KEYS, ("Minor", "Moderate", "Major"), strict=True):
-                fields.append((f"{meta.get('name', meta['station_id'])} ({meta['station_id']}): {label} (m)", meta["station_id"], key))
+                name = meta.get("name", meta["station_id"])
+                fields.append((f"{name} ({meta['station_id']}): {label} (m)", meta["station_id"], key))
         return fields
 
     async def async_step_thresholds(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:

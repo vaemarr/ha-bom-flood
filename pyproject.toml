@@ -5,3 +5,20 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 source = ["custom_components/bom_flood"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 130
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "BLE", "RUF"]
+ignore = [
+    "RUF001",  # ambiguous unicode in strings: README-style arrows and dashes are intentional
+    "RUF002",
+    "RUF003",
+    "RUF005",  # [*a, b] vs a + [b]: style only
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tools/*" = ["E402", "E501", "SIM115", "B007"]  # dev scripts; they add the repo to sys.path first
+"tests/*" = ["E501", "RUF012"]

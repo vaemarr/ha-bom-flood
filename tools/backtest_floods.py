@@ -39,7 +39,9 @@ from datetime import timedelta
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from custom_components.bom_flood import analysis as A  # noqa: E402
+import itertools
+
+from custom_components.bom_flood import analysis as A
 
 POLL = timedelta(minutes=15)
 DATUM_TOLERANCE_M = 0.15
@@ -100,7 +102,7 @@ def true_level(series, when):
 def crossings(series, threshold):
     """Times the true series first reaches `threshold` from below (interpolated)."""
     out = []
-    for a, b in zip(series, series[1:], strict=False):
+    for a, b in itertools.pairwise(series):
         if a.level < threshold <= b.level:
             f = (threshold - a.level) / (b.level - a.level)
             out.append(a.observed_at + f * (b.observed_at - a.observed_at))

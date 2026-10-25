@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import math
 import pathlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -20,7 +20,7 @@ from custom_components.bom_flood.const import (
     FLOOD_STATUS_NO_CLASSIFICATION,
 )
 
-T0 = datetime(2026, 10, 19, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 10, 19, 0, 0, tzinfo=UTC)
 
 
 def at(minutes: float) -> datetime:
@@ -72,7 +72,7 @@ def test_parse_hcs_picks_newest_record_not_last_row():
     parsed = A.parse_hcs(HCS, "WL")
     latest = parsed.latest("540001")
     assert latest.value == 1.25
-    assert latest.observed_at == datetime(2026, 10, 19, 8, 45, tzinfo=timezone.utc)
+    assert latest.observed_at == datetime(2026, 10, 19, 8, 45, tzinfo=UTC)
     assert len(parsed.records["540001"]) == 2
 
 
@@ -372,7 +372,7 @@ def test_stale_limit_follows_publication_not_logging():
 
 def test_stale_limit_from_publications_is_capped():
     tracker = A.GaugeTracker()
-    for i in range(5):
+    for _ in range(5):
         tracker.note_arrival(obs(0, 1.0), at(10 * 60))
     assert tracker.stale_after_hours() == 6.0
     tracker.note_arrival(obs(0, 1.0), at(-5))  # nonsense ages are ignored

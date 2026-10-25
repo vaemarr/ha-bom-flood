@@ -24,17 +24,14 @@ import urllib.request
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from custom_components.bom_flood import analysis as A  # noqa: E402
+from custom_components.bom_flood import analysis as A
 
 
 def ftp_get(name_or_prefix: str) -> str:
     ftp = ftplib.FTP("ftp.bom.gov.au", timeout=60)
     ftp.login()
     ftp.cwd("/anon/gen/fwo/")
-    if name_or_prefix.endswith(".html"):
-        name = name_or_prefix
-    else:
-        name = sorted(ftp.nlst(f"{name_or_prefix}_*.hcs"))[-1]
+    name = name_or_prefix if name_or_prefix.endswith(".html") else sorted(ftp.nlst(f"{name_or_prefix}_*.hcs"))[-1]
     buf = io.BytesIO()
     ftp.retrbinary(f"RETR {name}", buf.write)
     ftp.quit()
