@@ -18,7 +18,7 @@ Each gauge you pick becomes a device with these entities:
 |---|---|---|
 | **Flood status** | `Minor flood` | BOM's classification for the current level: Below flood level, Minor, Moderate, Major, or *No flood levels set* |
 | **Water level** | `2.41 m` | The latest reading BOM published |
-| **Trend** | `Rising` | Rising, Steady or Falling, from the last hour of readings |
+| **Trend** | `Rising` | Rising, Steady or Falling, from the last hour of readings. *Tidal* on a tidal gauge moving within its usual tide range |
 | **Rate of rise** | `+0.35 m/h` | How fast the level is changing |
 | **Time to next flood level** | `1.1 h` | The **earliest likely** time the next flood level is reached, while the river is rising (see [accuracy](#how-accurate-is-it)) |
 | **Flood heads-up** | `On` | This gauge could reach minor flood within about 4 hours: straight-line time to minor of 4 h or less, level already at least half of minor, on two readings in a row. Not a BOM forecast. Attribute `hours_to_minor` |
@@ -126,6 +126,23 @@ Every poll:
    minutes late). It is out of date at 1.5 times that, minimum one hour, maximum six.
    Until it has seen three publications, three missed reports (minimum one hour) is used. Rate, trend and projections are then
    withheld, because a rate from hours ago says nothing about the river now.
+
+### Tidal gauges
+
+Some gauges near the coast rise and fall with the tide (Logan River at Logan Village
+swings about 0.6 m twice a day). The integration detects this itself: a 12.4-hour tide
+pattern must explain most of the movement over the last 40 hours, continuously for 24
+hours (two tide cycles, so a double-peaked flood isn't mistaken for a tide).
+
+While a tidal gauge stays within the highs and lows of the previous day (plus 0.15 m)
+and below half its minor flood level, its trend shows *Tidal* and there is no time to
+next flood level or heads-up, because the rise is the tide coming in. Above recent high
+tides, or at half of minor or more, it is treated like any other gauge. A flood that
+swamps the tide also switches the tidal flag off. Water level attributes: `tidal`,
+`tide_range_m`.
+
+Checked on the live gauges (only Logan Village is tidal) and on ten years of 23
+non-tidal SEQ gauges, including floods: no gauge was ever wrongly flagged.
 
 ### When things go wrong
 

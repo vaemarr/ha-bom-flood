@@ -38,6 +38,8 @@ from .const import (
     FTP_TIMEOUT_S,
     HCS_RAINFALL_15MIN_PREFIX,
     HEADS_UP_CONFIRM,
+    HEADS_UP_FRACTION,
+    TREND_TIDAL,
     HCS_RAINFALL_HOURLY_PREFIX,
     HCS_WATER_LEVEL_DENSE_PREFIX,
     HCS_WATER_LEVEL_PREFIX,
@@ -189,6 +191,10 @@ class StationReading:
     # A big jump held back until the next reading confirms it.
     unconfirmed_level: float | None = None
     unconfirmed_at: datetime | None = None
+    # Tidal gauge, and whether the level is inside its usual tide range now.
+    tidal: bool = False
+    within_tide: bool = False
+    tide_range_m: float | None = None
 
     # Time-dependent values are derived on read, so a reading displayed long
     # after it was fetched (a hung or failing feed) still ages honestly.
@@ -209,10 +215,14 @@ class StationReading:
         return self.rate_m_per_h
 
     def trend(self, now: datetime) -> str | None:
-        return A.trend_from_rate(self.rate(now))
+        rate = self.rate(now)
+        if self.within_tide and rate is not None:
+            return TREND_TIDAL
+        return A.trend_from_rate(rate)
 
     def hours_to(self, now: datetime) -> dict[str, float | None]:
-        rate = self.rate(now)
+        # Within the tide range, a rise is the tide coming in, not a flood coming.
+        rate = None if self.within_tide else self.rate(now)
         return {
             name: A.hours_to_level(self.level, rate, self.thresholds.get(name))
             for name in LEVEL_KEYS
@@ -225,6 +235,8 @@ class StationReading:
         (HEADS_UP_CONFIRM = 2): close to minor in straight-line time and
         already at least half way to it. Never while the reading is out of date.
         """
+        if self.within_tide:
+            return None
         minor = self.thresholds.get("minor")
         latest = A.heads_up_hours(self.level, self.rate(now), minor)
         if latest is None:
@@ -542,6 +554,8 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
         if dense is not None:
             self._ingest_dense(dense)
         self._ingest_latest(wl)
+        for tracker in self._trackers.values():
+            tracker.update_tide()
         if polled_recently:
             # Learn how late each gauge's readings normally turn up; only
             # across back-to-back polls, so downtime is not mistaken for delay.
@@ -762,6 +776,8 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                     "cadence_h": t.cadence_hours(),
                     "stale_after_h": t.stale_after_hours(),
                     "arrival_ages_h": list(t.arrival_ages),
+                    "tide": {"tidal": t.tidal, "since": t.tide_since.isoformat() if t.tide_since else None,
+                             "range_m": t.tide_range_m, "fit": A.tide_fit(t.history), "band": t.tide_band()},
                     "held": [t.held.observed_at.isoformat(), t.held.level] if t.held else None,
                     "rate": vars(r) if (r := t.rate()) else None,
                     "level_shift_at": t.level_shift_at.isoformat() if t.level_shift_at else None,
@@ -829,6 +845,13 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
                 prev_rate_m_per_h=prev_rate.rate_m_per_h if prev_rate else None,
                 unconfirmed_level=tracker.held.level if tracker.held else None,
                 unconfirmed_at=tracker.held.observed_at if tracker.held else None,
+                tidal=tracker.tidal,
+                # Never below half of minor's safety margin: a false tide match
+                # in a flood must not hide anything that close to flooding.
+                within_tide=tracker.within_tide(now) and (
+                    thresholds["minor"] is None or latest.level < HEADS_UP_FRACTION * thresholds["minor"]
+                ),
+                tide_range_m=tracker.tide_range_m,
             )
         return readings
 
