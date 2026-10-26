@@ -1,4 +1,4 @@
 # Test and lint tooling (CI installs this; locally: .venv/bin/pip install -r requirements_test.txt)
-pytest-homeassistant-custom-component==0.13.316
+pytest-homeassistant-custom-component==0.13.373
 ruff==0.17.1
 pre-commit==4.3.0
