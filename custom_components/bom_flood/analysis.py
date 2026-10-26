@@ -11,36 +11,36 @@ from __future__ import annotations
 import csv
 import math
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from statistics import median
 from typing import Any
-from collections.abc import Iterable
 
 from .const import (
     DATUM_SHIFT_SAMPLES,
     EARLIEST_BAND_MIDPOINTS_H,
     EARLIEST_FACTORS,
-    HEADS_UP_FRACTION,
-    HEADS_UP_HOURS,
     FLOOD_STATUS_BELOW,
     FLOOD_STATUS_MAJOR,
     FLOOD_STATUS_MINOR,
     FLOOD_STATUS_MODERATE,
     FLOOD_STATUS_NO_CLASSIFICATION,
+    HEADS_UP_FRACTION,
+    HEADS_UP_HOURS,
+    HISTORY_HOURS,
     MAX_FALL_M_PER_H,
     MAX_RISE_FIRST_HOUR_M,
     MAX_RISE_M_PER_H_AFTER,
     MAX_STEP_HOURS,
     MIN_STEP_HOURS,
     PROJECTION_HORIZON_HOURS,
-    SPIKE_HOLD_M,
     RAINFALL_MAX_AGE_HOURS,
-    HISTORY_HOURS,
     RATE_HISTORY_HOURS,
     RATE_MIN_SPAN_HOURS,
     RATE_WINDOW_HOURS,
     RATE_WINDOW_MAX_HOURS,
+    SPIKE_HOLD_M,
     STALE_ARRIVAL_MIN_SAMPLES,
     STALE_ARRIVAL_MULTIPLIER,
     STALE_ARRIVAL_SAMPLES,
@@ -48,9 +48,6 @@ from .const import (
     STALE_FALLBACK_HOURS,
     STALE_MAX_HOURS,
     STALE_MIN_HOURS,
-    TREND_FALLING,
-    TREND_RISING,
-    TREND_STEADY,
     TIDE_BAND_HOURS,
     TIDE_BAND_MARGIN_M,
     TIDE_CONFIRM_HOURS,
@@ -60,7 +57,10 @@ from .const import (
     TIDE_OFF_FIT,
     TIDE_OFF_RANGE_M,
     TIDE_PERIOD_HOURS,
+    TREND_FALLING,
     TREND_FALLING_THRESHOLD_M_PER_H,
+    TREND_RISING,
+    TREND_STEADY,
     TREND_THRESHOLD_M_PER_H,
 )
 
@@ -90,7 +90,7 @@ def parse_utc(value: str | None) -> datetime | None:
         return None
     if parsed.tzinfo is None:
         return None
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 def safe_float(value: Any) -> float | None:

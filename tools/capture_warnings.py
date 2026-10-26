@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from custom_components.bom_flood import analysis as A  # noqa: E402
+from custom_components.bom_flood import analysis as A
 
 NAME_RE = re.compile(r"^ID[A-Z]\d{5}\.txt$")
 

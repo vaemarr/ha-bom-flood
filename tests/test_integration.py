@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
@@ -25,7 +25,7 @@ from custom_components.bom_flood.const import (
 
 from .fake_bom import FakeBom, hcs, popup
 
-NOW = datetime(2026, 10, 19, 10, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 19, 10, 0, tzinfo=UTC)
 LOGAN = "540001"
 CREEK = "540002"  # no BOM flood levels
 REGION = "IDQ65404"

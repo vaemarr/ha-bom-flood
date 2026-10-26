@@ -315,9 +315,17 @@ Version 2.0 changes some entity states and attributes:
 
 ```bash
 uv venv --python 3.13 .venv
-uv pip install --python .venv/bin/python pytest-homeassistant-custom-component pytest-cov
+uv pip install --python .venv/bin/python -r requirements_test.txt
 .venv/bin/python -m pytest --cov
+.venv/bin/pre-commit run --all-files
 ```
+
+Every commit runs the checks in `.pre-commit-config.yaml` (through the beads git hook):
+a block on private data (LAN addresses, Home Assistant tokens, token files, SSH logins,
+home directory paths), gitleaks secret detection, private-key detection, ruff, and file
+sanity checks. CI runs the same checks plus the tests (90% coverage minimum), a gitleaks
+scan of the full history, and Home Assistant's hassfest and HACS validation. GitHub
+secret scanning with push protection is on for the repository.
 
 ## License
 

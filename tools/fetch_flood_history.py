@@ -25,7 +25,7 @@ import urllib.request
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from custom_components.bom_flood import analysis as A  # noqa: E402
+from custom_components.bom_flood import analysis as A
 
 BASE = (
     "https://www.bom.gov.au/waterdata/services?service=kisters&type=queryServices"
@@ -49,7 +49,7 @@ def get(params: dict) -> object:
         try:
             with urllib.request.urlopen(url, timeout=120) as resp:
                 return json.load(resp)
-        except Exception:  # noqa: BLE001
+        except Exception:
             if attempt == 2:
                 raise
             time.sleep(3 * (attempt + 1))

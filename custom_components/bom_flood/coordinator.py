@@ -24,11 +24,11 @@ from homeassistant.util import dt as dt_util
 from . import analysis as A
 from .const import (
     CONF_CUSTOM_THRESHOLDS,
-    DATUM_AGREEMENT_M,
     CONF_REGION,
     CONF_SCAN_INTERVAL,
     CONF_STATION_META,
     CONF_STATIONS,
+    DATUM_AGREEMENT_M,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     FETCH_ATTEMPTS,
@@ -37,12 +37,11 @@ from .const import (
     FTP_PATH,
     FTP_TIMEOUT_S,
     HCS_RAINFALL_15MIN_PREFIX,
-    HEADS_UP_CONFIRM,
-    HEADS_UP_FRACTION,
-    TREND_TIDAL,
     HCS_RAINFALL_HOURLY_PREFIX,
     HCS_WATER_LEVEL_DENSE_PREFIX,
     HCS_WATER_LEVEL_PREFIX,
+    HEADS_UP_CONFIRM,
+    HEADS_UP_FRACTION,
     KEEP_SERVING_HOURS,
     LEVEL_KEYS,
     MAP_REFRESH_HOURS,
@@ -51,6 +50,7 @@ from .const import (
     THRESHOLD_KEYS,
     THRESHOLDS_SOURCE_BOM,
     THRESHOLDS_SOURCE_USER,
+    TREND_TIDAL,
     UPDATE_TIMEOUT_S,
 )
 
@@ -424,7 +424,7 @@ class BomFloodCoordinator(DataUpdateCoordinator[dict[str, StationReading]]):
         """
         try:
             stored = await self._store.async_load()
-        except Exception:  # noqa: BLE001 - corrupt storage must not block setup
+        except Exception:  # corrupt storage must not block setup
             _LOGGER.warning("Stored BOM Flood history is unreadable; starting fresh", exc_info=True)
             return
         if not isinstance(stored, dict):
